@@ -9,7 +9,7 @@ Fast disk space analyzer and cleaner for macOS. A Rust core library with a CLI o
 
 ## Commands
 - `cargo fmt --all && cargo clippy --all-targets && cargo test` must be clean (zero warnings) before finishing.
-- Benchmark: `cargo build --release && target/release/cl-rs scan ~ -d 0`. Baseline ~14.5 s, 3.4M files. Don't regress it.
+- Benchmark: `cargo build --release && target/release/cl-rs scan ~ -d 0`. Baseline ~14.5 s and ~385 MB peak RSS on 3.4M files (`/usr/bin/time -l`). Don't regress either.
 
 ## Code style
 - Rust 2024, rustfmt defaults. Lints are set in the workspace `Cargo.toml` (clippy `pedantic`); fix warnings instead of `#[allow]`ing them, unless there's a clear reason.
@@ -37,7 +37,8 @@ Fast disk space analyzer and cleaner for macOS. A Rust core library with a CLI o
 - Size = allocated blocks (`ATTR_FILE_ALLOCSIZE`), not logical length.
 - Hard links are counted once per `(dev, inode)`. Symlinks are never followed.
 - Stays on the root's volume unless `cross_devices(true)` is set.
-- Tree nodes are stored breadth-first in a flat `Vec`, names are packed into one byte buffer, `NodeId` is a `u32`, and children are sorted largest first.
+- Each directory owns one block: a packed name buffer plus an exact-size `Box<[Node]>` of its children, sorted largest first. Workers build and sort blocks during the scan; `Tree::build` only links them breadth-first (no copying). `NodeId` is `(block, index)`.
+- Scan scratch buffers are per-thread and copied into exact-size boxes per directory; don't grow `Vec`s that outlive a directory.
 
 ## Cleanup (upcoming)
 - Default action is move to Trash; never `rm` user data directly. Prefer the tool's own command (`npm cache clean`, `ollama rm`, `xcrun simctl`).
