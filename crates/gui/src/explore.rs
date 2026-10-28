@@ -13,7 +13,7 @@ use crate::format;
 pub(crate) struct Directory {
     pub(crate) cached: Arc<Cached>,
     pub(crate) id: NodeId,
-    rows: Vec<NodeId>,
+    pub(crate) rows: Vec<NodeId>,
 }
 
 impl Directory {

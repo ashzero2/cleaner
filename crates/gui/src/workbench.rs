@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use clrs_core::{Cached, EntryKind, NodeId, Progress, Source};
@@ -16,13 +15,16 @@ use gpui_kit::{
 };
 
 use crate::actions::{
-    ChooseFolder, CopyPath, FreshScan, OpenFolder, OpenSettings, ParentFolder, Refresh, Reveal,
-    ScanHome, ShowIssues, StopScan, ToggleInspector,
+    Back, CancelSearch, ChooseFolder, CopyPath, Forward, FreshScan, OpenFolder, OpenSettings,
+    ParentFolder, Refresh, Reveal, ReviewChanges, ScanHome, ShowIssues, StageSelection, StopScan,
+    ToggleInspector, ToggleSelectionMode, TrashSelection, UnstageSelection,
 };
 use crate::explore::Directory;
 use crate::jobs::{Event, Jobs, ScanRequest};
+use crate::selection::SelectionState;
 use crate::settings::{Appearance, Density, Loaded, Settings};
 use crate::{format, panels, theme};
+use std::sync::Arc;
 
 struct Running {
     progress: Arc<Progress>,
@@ -36,7 +38,7 @@ pub(crate) struct Workbench {
     running: Option<Running>,
     table: Option<Entity<TableState<Directory>>>,
     table_subscription: Option<Subscription>,
-    selected: Option<NodeId>,
+    selection: SelectionState,
     inspector: bool,
     status: String,
     warning: Option<String>,
@@ -107,7 +109,7 @@ impl Workbench {
             running: None,
             table: None,
             table_subscription: None,
-            selected: None,
+            selection: SelectionState::default(),
             inspector: true,
             status: "Choose a folder to see what is taking up space.".into(),
             warning: loaded.warning,
@@ -249,15 +251,27 @@ impl Workbench {
         self.table_subscription =
             Some(
                 cx.subscribe_in(&table, window, |this, table, event, window, cx| {
+                    let directory = table.read(cx).delegate();
                     match event {
                         TableEvent::SelectRow(row) => {
-                            this.selected = table.read(cx).delegate().row(*row);
+                            if let Some(id) = directory.row(*row) {
+                                let modifiers = window.modifiers();
+                                if modifiers.shift {
+                                    this.selection.select_range(id, directory);
+                                } else if modifiers.control {
+                                    this.selection.toggle(id);
+                                } else {
+                                    this.selection.select_single(id);
+                                }
+                            }
                         }
                         TableEvent::DoubleClickedRow(row) => {
-                            this.selected = table.read(cx).delegate().row(*row);
-                            this.open_selected(window, cx);
+                            if let Some(id) = table.read(cx).delegate().row(*row) {
+                                this.selection.toggle(id);
+                                this.open_selected(window, cx);
+                            }
                         }
-                        TableEvent::ClearSelection => this.selected = None,
+                        TableEvent::ClearSelection => this.selection.clear(),
                         _ => {}
                     }
                     cx.notify();
@@ -271,7 +285,7 @@ impl Workbench {
             window.focus(&table.focus_handle(cx), cx);
         }
         self.table = Some(table);
-        self.selected = None;
+        self.selection.clear();
         cx.notify();
     }
 
@@ -315,8 +329,9 @@ impl Workbench {
     }
 
     fn open_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let (Some(table), Some(id)) = (&self.table, self.selected) {
-            let cached = Arc::clone(&table.read(cx).delegate().cached);
+        if let (Some(table), Some(&id)) = (&self.table, self.selection.selected.last()) {
+            let directory = table.read(cx).delegate();
+            let cached = Arc::clone(&directory.cached);
             if cached.tree.node(id).kind() == EntryKind::Dir {
                 self.navigate(cached, id, true, window, cx);
             }
@@ -334,12 +349,13 @@ impl Workbench {
 
     fn selection_path(&self, cx: &Context<Self>) -> Option<PathBuf> {
         let directory = self.table.as_ref()?.read(cx).delegate();
-        Some(
-            directory
-                .cached
-                .tree
-                .path(self.selected.unwrap_or(directory.id)),
-        )
+        let id = self
+            .selection
+            .selected
+            .last()
+            .copied()
+            .unwrap_or(directory.id);
+        Some(directory.cached.tree.path(id))
     }
 
     fn reveal(&self, cx: &mut Context<Self>) {
@@ -460,7 +476,12 @@ impl Workbench {
         if let Some(table) = &self.table {
             panel = panel.child(div().font_semibold().child("Inspector"));
             let directory = table.read(cx).delegate();
-            let id = self.selected.unwrap_or(directory.id);
+            let id = self
+                .selection
+                .selected
+                .last()
+                .copied()
+                .unwrap_or(directory.id);
             let node = directory.cached.tree.node(id);
             panel = panel
                 .child(
@@ -618,7 +639,7 @@ impl Workbench {
                 div().flex_1().min_h_0().child(
                     DataTable::new(table)
                         .bordered(false)
-                        .stripe(false)
+                        .stripe(true)
                         .with_size(match self.settings.density {
                             Density::Comfortable => Size::Medium,
                             Density::Compact => Size::Small,
@@ -685,6 +706,34 @@ impl Render for Workbench {
             }))
             .on_action(cx.listener(|_, _: &OpenSettings, window, cx| panels::settings(window, cx)))
             .on_action(cx.listener(|this, _: &ShowIssues, window, cx| this.issues(window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleSelectionMode, _, cx| {
+                this.selection.selected.clear();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &TrashSelection, _, cx| {
+                this.selection.selected.clear();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &StageSelection, _, cx| {
+                this.selection.stage_all();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &UnstageSelection, _, cx| {
+                this.selection.selected.clear();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|_, _: &Back, _window, _cx| {
+                // Placeholder - implement history later
+            }))
+            .on_action(cx.listener(|_, _: &Forward, _window, _cx| {
+                // Placeholder - implement history later
+            }))
+            .on_action(cx.listener(|_, _: &CancelSearch, _window, _cx| {
+                // Placeholder - implement search later
+            }))
+            .on_action(cx.listener(|_, _: &ReviewChanges, _window, _cx| {
+                // Placeholder - implement review later
+            }))
             .child(toolbar)
             .child(body)
             .child(

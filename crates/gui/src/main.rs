@@ -7,6 +7,7 @@ mod explore;
 mod format;
 mod jobs;
 mod panels;
+mod selection;
 mod settings;
 mod theme;
 mod workbench;

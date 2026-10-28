@@ -15,7 +15,16 @@ gpui::actions!(
         CopyPath,
         ToggleInspector,
         OpenSettings,
-        ShowIssues
+        ShowIssues,
+        ToggleSelectionMode,
+        TrashSelection,
+        StageSelection,
+        UnstageSelection,
+        ReviewChanges,
+        CancelSearch,
+        OpenLargestFiles,
+        Back,
+        Forward
     ]
 );
 
@@ -31,6 +40,13 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("cmd-i", ToggleInspector, Some("Workbench")),
         KeyBinding::new("cmd-shift-c", CopyPath, Some("Workbench")),
         KeyBinding::new("cmd-,", OpenSettings, Some("Workbench")),
+        KeyBinding::new("escape", CancelSearch, Some("Workbench")),
+        KeyBinding::new("cmd-\\", TrashSelection, Some("Workbench")),
+        KeyBinding::new("cmd-t", StageSelection, Some("Workbench")),
+        KeyBinding::new("cmd-shift-t", UnstageSelection, Some("Workbench")),
+        KeyBinding::new("cmd-shift-r", ReviewChanges, Some("Workbench")),
+        KeyBinding::new("cmd-l", OpenLargestFiles, Some("Workbench")),
+        KeyBinding::new("cmd-[", Back, Some("Workbench")),
     ]);
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.set_menus([
