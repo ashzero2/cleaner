@@ -7,7 +7,11 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+crc32fast.workspace = true
+dispatch2.workspace = true
 libc.workspace = true
+objc2-core-foundation.workspace = true
+objc2-core-services.workspace = true
 rayon.workspace = true
 serde.workspace = true
 thiserror.workspace = true

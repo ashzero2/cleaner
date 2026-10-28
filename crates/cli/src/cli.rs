@@ -49,6 +49,18 @@ pub(crate) struct ScanArgs {
     /// Print machine-readable JSON to stdout
     #[arg(long)]
     pub(crate) json: bool,
+
+    /// Ignore the saved scan and rescan everything, then replace it
+    #[arg(long)]
+    pub(crate) fresh: bool,
+
+    /// Neither read nor write the saved scan
+    #[arg(long, conflicts_with = "fresh")]
+    pub(crate) no_cache: bool,
+
+    /// Where saved scans live (default: ~/Library/Caches/cl-rs)
+    #[arg(long, env = "CLRS_CACHE_DIR", value_name = "DIR")]
+    pub(crate) cache_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]

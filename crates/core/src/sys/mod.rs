@@ -1,11 +1,15 @@
-use std::ffi::CString;
+use std::ffi::{CStr, CString, OsStr};
 use std::io;
+use std::mem::MaybeUninit;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+pub(crate) mod fsevents;
 
 const ATTR_CMN_ERROR: u32 = 0x2000_0000;
 pub(crate) const EPERM: i32 = libc::EPERM;
+pub(crate) const EIO: i32 = libc::EIO;
 const VREG: u32 = 1;
 const VDIR: u32 = 2;
 const VLNK: u32 = 5;
@@ -27,6 +31,25 @@ pub enum EntryKind {
 }
 
 impl EntryKind {
+    pub(crate) fn code(self) -> u8 {
+        match self {
+            Self::File => 0,
+            Self::Dir => 1,
+            Self::Symlink => 2,
+            Self::Other => 3,
+        }
+    }
+
+    pub(crate) fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::File),
+            1 => Some(Self::Dir),
+            2 => Some(Self::Symlink),
+            3 => Some(Self::Other),
+            _ => None,
+        }
+    }
+
     fn from_vtype(vtype: u32) -> Self {
         match vtype {
             VREG => Self::File,
@@ -44,6 +67,27 @@ pub(crate) struct Attrs {
     pub(crate) inode: u64,
     pub(crate) links: u32,
     pub(crate) allocated: u64,
+}
+
+/// Whether `error` means the path no longer exists or is no longer a directory.
+pub(crate) fn is_gone(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(libc::ENOTDIR)
+}
+
+/// The mount point of the volume that holds `path`.
+pub(crate) fn mount_point(path: &Path) -> io::Result<PathBuf> {
+    let path = CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    let mut stat = MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: `path` is NUL-terminated and `stat` points to writable memory of the right size.
+    if unsafe { libc::statfs(path.as_ptr(), stat.as_mut_ptr()) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `statfs` succeeded, so the struct is fully initialised.
+    let stat = unsafe { stat.assume_init() };
+    // SAFETY: `f_mntonname` is a NUL-terminated string inside the initialised struct.
+    let name = unsafe { CStr::from_ptr(stat.f_mntonname.as_ptr()) };
+    Ok(PathBuf::from(OsStr::from_bytes(name.to_bytes())))
 }
 
 #[derive(Debug)]

@@ -12,18 +12,22 @@ use std::sync::{Arc, Mutex, PoisonError};
 use rayon::prelude::*;
 
 use crate::error::{Error, ScanIssue};
+use crate::journal::Dirty;
 use crate::sys::{Attrs, DirHandle, EntryKind};
-use crate::tree::{Node, Tree, by_size_then_name};
+use crate::tree::{FLAG_REUSED, Link, Node, Tree, by_size_then_name};
+use crate::update;
 
 const BULK_BUFFER_SIZE: usize = 256 * 1024;
 const SCRATCH_RETAIN: usize = 1 << 20;
 const HARD_LINK_SHARDS: usize = 64;
 const WORKER_STACK_SIZE: usize = 8 * 1024 * 1024;
+type PackedDirectory = (Box<[u8]>, Box<[Node]>, Box<[Link]>);
 
 struct Scratch {
     bulk: Vec<u8>,
     names: Vec<u8>,
     nodes: Vec<Node>,
+    links: Vec<Link>,
 }
 
 thread_local! {
@@ -31,6 +35,7 @@ thread_local! {
         bulk: vec![0; BULK_BUFFER_SIZE],
         names: Vec::new(),
         nodes: Vec::new(),
+        links: Vec::new(),
     });
 }
 
@@ -111,6 +116,29 @@ impl Scanner {
         Arc::clone(&self.progress)
     }
 
+    pub(crate) fn crosses_devices(&self) -> bool {
+        self.cross_devices
+    }
+
+    pub(crate) fn canonical_root(&self) -> Result<PathBuf, Error> {
+        fs::canonicalize(&self.root).map_err(|source| Error::Root {
+            path: self.root.clone(),
+            source,
+        })
+    }
+
+    fn pool(&self) -> Result<rayon::ThreadPool, Error> {
+        Ok(rayon::ThreadPoolBuilder::new()
+            .num_threads(self.threads)
+            .stack_size(WORKER_STACK_SIZE)
+            .thread_name(|i| format!("clrs-scan-{i}"))
+            .build()?)
+    }
+
+    fn walker(&self, root_device: u64) -> Walker<'_> {
+        Walker::new((!self.cross_devices).then_some(root_device), &self.progress)
+    }
+
     /// Walks the tree and returns it together with every path that could not be read.
     ///
     /// # Errors
@@ -118,10 +146,7 @@ impl Scanner {
     /// Fails if the root cannot be accessed, the thread pool cannot start, the tree
     /// holds more entries than can be indexed, or the scan was cancelled.
     pub fn run(&self) -> Result<(Tree, Vec<ScanIssue>), Error> {
-        let root = fs::canonicalize(&self.root).map_err(|source| Error::Root {
-            path: self.root.clone(),
-            source,
-        })?;
+        let root = self.canonical_root()?;
         let metadata = fs::symlink_metadata(&root).map_err(|source| Error::Root {
             path: root.clone(),
             source,
@@ -134,26 +159,40 @@ impl Scanner {
             return Ok((Tree::single_file(root, size)?, Vec::new()));
         }
 
-        let walker = Walker {
-            device: (!self.cross_devices).then(|| metadata.dev()),
-            progress: &self.progress,
-            hard_links: HardLinks::default(),
-            issues: Mutex::default(),
-        };
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(self.threads)
-            .stack_size(WORKER_STACK_SIZE)
-            .thread_name(|i| format!("clrs-scan-{i}"))
-            .build()?;
-        let subtree = pool.install(|| walker.walk_dir(&root));
+        let walker = self.walker(metadata.dev());
+        let subtree = self.pool()?.install(|| walker.walk_dir(&root));
         if self.progress.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        let issues = walker
-            .issues
-            .into_inner()
-            .unwrap_or_else(PoisonError::into_inner);
-        Ok((Tree::build(root, subtree)?, issues))
+        Ok((Tree::build(root, subtree)?, walker.into_issues()))
+    }
+
+    /// Brings `tree` up to date by rescanning only the directories in `dirty`.
+    /// `issues` are the unreadable paths known from earlier; the returned list replaces them.
+    pub(crate) fn update(
+        &self,
+        tree: Tree,
+        dirty: &[Dirty],
+        issues: Vec<ScanIssue>,
+    ) -> Result<(Tree, Vec<ScanIssue>), Error> {
+        let metadata = fs::symlink_metadata(&tree.root_path).map_err(|source| Error::Root {
+            path: tree.root_path.clone(),
+            source,
+        })?;
+        let walker = self.walker(metadata.dev());
+        let pool = self.pool()?;
+        let (tree, rescans) = pool.install(|| update::apply(&walker, tree, dirty))?;
+        if self.progress.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        let mut kept: Vec<ScanIssue> = issues
+            .into_iter()
+            .filter(|issue| !rescans.invalidates(&issue.path))
+            .collect();
+        kept.extend(walker.into_issues());
+        let mut seen = HashSet::new();
+        kept.retain(|issue| seen.insert(issue.path.clone()));
+        Ok((tree, kept))
     }
 }
 
@@ -165,18 +204,28 @@ pub(crate) struct Subtree {
     pub(crate) dirs: u64,
     pub(crate) names: Box<[u8]>,
     pub(crate) children: Box<[Node]>,
+    pub(crate) links: Box<[Link]>,
     pub(crate) subtrees: Vec<Subtree>,
 }
 
 impl Subtree {
-    fn new(names: Box<[u8]>, mut children: Box<[Node]>, subtrees: Vec<Subtree>) -> Self {
+    pub(crate) fn new(
+        names: Box<[u8]>,
+        mut children: Box<[Node]>,
+        links: Box<[Link]>,
+        subtrees: Vec<Subtree>,
+    ) -> Self {
         let mut local = 0;
         let mut subtree = Self {
             nodes: children.len() as u64,
             ..Self::default()
         };
         for child in &mut *children {
-            if child.kind == EntryKind::Dir {
+            if child.kind != EntryKind::Dir {
+                subtree.files += 1;
+            } else if child.flags & FLAG_REUSED != 0 {
+                subtree.files += u64::from(child.files);
+            } else {
                 let inner = &subtrees[local as usize];
                 child.size = inner.size;
                 child.files = u32::try_from(inner.files).unwrap_or(u32::MAX);
@@ -185,8 +234,6 @@ impl Subtree {
                 subtree.files += inner.files;
                 subtree.nodes += inner.nodes;
                 subtree.dirs += inner.dirs + 1;
-            } else {
-                subtree.files += 1;
             }
             subtree.size += child.size;
         }
@@ -195,6 +242,7 @@ impl Subtree {
         });
         subtree.names = names;
         subtree.children = children;
+        subtree.links = links;
         subtree.subtrees = subtrees;
         subtree
     }
@@ -207,29 +255,90 @@ fn pack_name(names: &mut Vec<u8>, name: &[u8]) -> Option<(u32, u16)> {
     Some((start, len))
 }
 
-struct Walker<'a> {
+pub(crate) struct Listing {
+    pub(crate) names: Box<[u8]>,
+    pub(crate) nodes: Box<[Node]>,
+    pub(crate) links: Box<[Link]>,
+    pub(crate) subdirs: Vec<usize>,
+}
+
+impl Listing {
+    pub(crate) fn empty() -> Self {
+        Self {
+            names: Box::default(),
+            nodes: Box::default(),
+            links: Box::default(),
+            subdirs: Vec::new(),
+        }
+    }
+}
+
+pub(crate) struct Walker<'a> {
     device: Option<u64>,
     progress: &'a Progress,
     hard_links: HardLinks,
     issues: Mutex<Vec<ScanIssue>>,
 }
 
-impl Walker<'_> {
-    fn walk_dir(&self, path: &Path) -> Subtree {
+impl<'a> Walker<'a> {
+    fn new(device: Option<u64>, progress: &'a Progress) -> Self {
+        Self {
+            device,
+            progress,
+            hard_links: HardLinks::default(),
+            issues: Mutex::default(),
+        }
+    }
+
+    pub(crate) fn into_issues(self) -> Vec<ScanIssue> {
+        self.issues
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.progress.is_cancelled()
+    }
+
+    pub(crate) fn walk_dir(&self, path: &Path) -> Subtree {
         if self.progress.is_cancelled() {
             return Subtree::default();
         }
-        let handle = match DirHandle::open(path) {
-            Ok(handle) => handle,
+        let listing = match self.read_dir(path) {
+            Ok(listing) => listing,
             Err(error) => {
                 self.report(path.to_path_buf(), error);
                 return Subtree::default();
             }
         };
+        let Listing {
+            names,
+            nodes,
+            links,
+            subdirs,
+        } = listing;
+        let subtrees = subdirs
+            .into_par_iter()
+            .map(|index| {
+                let name = nodes[index].name(&names);
+                self.walk_dir(&path.join(OsStr::from_bytes(name)))
+            })
+            .collect();
+        Subtree::new(names, nodes, links, subtrees)
+    }
 
+    /// Reads one directory without descending. Fails only if it cannot be opened;
+    /// per-entry problems are recorded as issues.
+    pub(crate) fn read_dir(&self, path: &Path) -> io::Result<Listing> {
+        let handle = DirHandle::open(path)?;
         let mut subdirs: Vec<usize> = Vec::new();
-        let (result, names, children) = SCRATCH.with_borrow_mut(|scratch| {
-            let Scratch { bulk, names, nodes } = scratch;
+        let (result, names, nodes, links) = SCRATCH.with_borrow_mut(|scratch| {
+            let Scratch {
+                bulk,
+                names,
+                nodes,
+                links,
+            } = scratch;
             let result = handle.read_entries(bulk, |child, attrs| {
                 let attrs = match attrs {
                     Ok(attrs) => attrs,
@@ -251,31 +360,49 @@ impl Walker<'_> {
                     subdirs.push(nodes.len());
                     nodes.push(Node::dir(start, len));
                 } else {
-                    nodes.push(Node::leaf(start, len, attrs.kind, self.charge(&attrs)));
+                    let multi = attrs.links > 1;
+                    if multi {
+                        links.push(Link {
+                            name_start: start,
+                            dev: attrs.dev,
+                            ino: attrs.inode,
+                            alloc: attrs.allocated,
+                            nlink: attrs.links,
+                        });
+                    }
+                    nodes.push(Node::leaf(
+                        start,
+                        len,
+                        attrs.kind,
+                        self.charge(&attrs),
+                        multi,
+                    ));
                 }
             });
-            let exact: (Box<[u8]>, Box<[Node]>) =
-                (names.as_slice().into(), nodes.as_slice().into());
+            let exact: PackedDirectory = (
+                names.as_slice().into(),
+                nodes.as_slice().into(),
+                links.as_slice().into(),
+            );
             names.clear();
             names.shrink_to(SCRATCH_RETAIN);
             nodes.clear();
             nodes.shrink_to(SCRATCH_RETAIN / size_of::<Node>());
-            (result, exact.0, exact.1)
+            links.clear();
+            links.shrink_to(SCRATCH_RETAIN / size_of::<Link>());
+            (result, exact.0, exact.1, exact.2)
         });
         drop(handle);
         if let Err(error) = result {
             self.report(path.to_path_buf(), error);
         }
         self.progress.dirs.fetch_add(1, Ordering::Relaxed);
-
-        let subtrees = subdirs
-            .into_par_iter()
-            .map(|index| {
-                let name = children[index].name(&names);
-                self.walk_dir(&path.join(OsStr::from_bytes(name)))
-            })
-            .collect();
-        Subtree::new(names, children, subtrees)
+        Ok(Listing {
+            names,
+            nodes,
+            links,
+            subdirs,
+        })
     }
 
     fn same_device(&self, dev: i32) -> bool {
@@ -291,7 +418,7 @@ impl Walker<'_> {
         size
     }
 
-    fn report(&self, path: PathBuf, error: io::Error) {
+    pub(crate) fn report(&self, path: PathBuf, error: io::Error) {
         self.progress.issues.fetch_add(1, Ordering::Relaxed);
         self.issues
             .lock()

@@ -15,6 +15,7 @@ fn write(path: &Path, len: usize) {
 fn cl_rs(args: &[&str], root: &Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_cl-rs"))
         .args(args)
+        .arg("--no-cache")
         .arg(root)
         .output()
         .expect("run cl-rs")
@@ -120,6 +121,7 @@ fn home_fixture() -> tempfile::TempDir {
 fn cl_rs_home(args: &[&str], home: &Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_cl-rs"))
         .args(args)
+        .arg("--no-cache")
         .env("HOME", home)
         .stdin(Stdio::null())
         .output()
@@ -306,12 +308,12 @@ fn invalid_rules_are_reported() {
 #[test]
 fn interrupt_stops_scan_with_exit_130() {
     let child = Command::new(env!("CARGO_BIN_EXE_cl-rs"))
-        .args(["scan", "-q", "/System/Library"])
+        .args(["scan", "-q", "--no-cache", "/System/Library"])
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn cl-rs");
-    thread::sleep(Duration::from_millis(500));
+    thread::sleep(Duration::from_millis(1500));
     let signalled = Instant::now();
     let status = Command::new("kill")
         .args(["-INT", &child.id().to_string()])
@@ -323,4 +325,274 @@ fn interrupt_stops_scan_with_exit_130() {
     assert_eq!(output.status.code(), Some(130));
     assert!(String::from_utf8_lossy(&output.stderr).contains("cancelled"));
     assert!(signalled.elapsed() < Duration::from_secs(3));
+}
+
+const SETTLE: Duration = Duration::from_millis(1500);
+
+fn cached(args: &[&str], root: &Path, cache: &Path) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_cl-rs"))
+        .args(args)
+        .arg(root)
+        .env("CLRS_CACHE_DIR", cache)
+        .stdin(Stdio::null())
+        .output()
+        .expect("run cl-rs")
+}
+
+const FULL_TREE: [&str; 6] = ["scan", "-q", "--json", "-d", "99", "-n"];
+
+fn full_tree(root: &Path, cache: &Path) -> Value {
+    json(&cached(
+        &[&FULL_TREE[..], &["10000000"]].concat(),
+        root,
+        cache,
+    ))
+}
+
+fn fresh_tree(root: &Path) -> Value {
+    let mut args = FULL_TREE.to_vec();
+    args.extend(["10000000", "--no-cache"]);
+    json(&cl_rs_plain(&args, root))
+}
+
+fn cl_rs_plain(args: &[&str], root: &Path) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_cl-rs"))
+        .args(args)
+        .arg(root)
+        .output()
+        .expect("run cl-rs")
+}
+
+fn assert_same_tree(actual: &Value, expected: &Value) {
+    assert_eq!(
+        actual["tree"], expected["tree"],
+        "incremental tree differs from a fresh scan"
+    );
+    assert_eq!(actual["size"], expected["size"]);
+    assert_eq!(actual["files"], expected["files"]);
+}
+
+fn snapshot_file(cache: &Path) -> std::path::PathBuf {
+    fs::read_dir(cache)
+        .expect("cache dir")
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "snap"))
+        .expect("snapshot file")
+}
+
+fn project() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write(&root.join("a/f1.bin"), 8 * 1024);
+    write(&root.join("a/f2.bin"), 100 * 1024);
+    write(&root.join("b/c/d/g.bin"), 64 * 1024);
+    write(&root.join("b/h.bin"), 4 * 1024);
+    write(&root.join("big/x.bin"), 200 * 1024);
+    write(&root.join("swap/file"), 10);
+    write(&root.join("keep/deep/er/still.bin"), 32 * 1024);
+    write(&root.join("emptyme/one.bin"), 16 * 1024);
+    dir
+}
+
+#[test]
+fn second_scan_loads_the_saved_snapshot() {
+    let dir = project();
+    let cache = tempfile::tempdir().expect("cache dir");
+
+    let first = full_tree(dir.path(), cache.path());
+    assert_eq!(first["source"], "scan");
+    let second = full_tree(dir.path(), cache.path());
+    assert_eq!(second["source"], "cache");
+    assert_eq!(second["changed_dirs"], 0);
+    assert_same_tree(&second, &first);
+
+    let mode = fs::metadata(snapshot_file(cache.path()))
+        .expect("metadata")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o077, 0, "snapshot must be private, mode {mode:o}");
+}
+
+#[test]
+fn incremental_update_matches_a_fresh_scan() {
+    let dir = project();
+    let cache = tempfile::tempdir().expect("cache dir");
+    let root = dir.path();
+    assert_eq!(full_tree(root, cache.path())["source"], "scan");
+
+    write(&root.join("a/new.bin"), 50 * 1024);
+    fs::remove_file(root.join("a/f1.bin")).expect("remove file");
+    write(&root.join("b/h.bin"), 300 * 1024);
+    write(&root.join("n1/n2/n3/deep.bin"), 80 * 1024);
+    fs::remove_dir_all(root.join("big")).expect("remove dir");
+    fs::rename(root.join("b/c"), root.join("b/c2")).expect("rename dir");
+    fs::remove_file(root.join("swap/file")).expect("remove file");
+    write(&root.join("swap/file/inner.bin"), 20 * 1024);
+    fs::remove_dir_all(root.join("emptyme")).expect("remove dir");
+    fs::create_dir(root.join("emptyme")).expect("recreate empty dir");
+    fs::create_dir(root.join("brand-new-empty")).expect("empty dir");
+    thread::sleep(SETTLE);
+
+    let updated = full_tree(root, cache.path());
+    assert_eq!(updated["source"], "cache");
+    assert!(updated["changed_dirs"].as_u64().expect("changed_dirs") > 0);
+    assert_same_tree(&updated, &fresh_tree(root));
+
+    let again = full_tree(root, cache.path());
+    assert_eq!(again["changed_dirs"], 0);
+    assert_same_tree(&again, &updated);
+}
+
+#[test]
+fn repeated_updates_stay_consistent() {
+    let dir = project();
+    let cache = tempfile::tempdir().expect("cache dir");
+    let root = dir.path();
+    full_tree(root, cache.path());
+
+    for round in 0..4 {
+        write(
+            &root.join(format!("a/round{round}.bin")),
+            (round + 1) * 10 * 1024,
+        );
+        write(&root.join(format!("r{round}/sub/leaf.bin")), 4096);
+        if round > 0 {
+            fs::remove_dir_all(root.join(format!("r{}", round - 1))).expect("remove dir");
+        }
+        thread::sleep(SETTLE);
+        let updated = full_tree(root, cache.path());
+        assert_eq!(updated["source"], "cache", "round {round}");
+        assert_same_tree(&updated, &fresh_tree(root));
+    }
+}
+
+#[test]
+fn hard_link_changes_keep_totals_exact() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cache = tempfile::tempdir().expect("cache dir");
+    let root = dir.path();
+    write(&root.join("a/orig.bin"), 256 * 1024);
+    fs::create_dir_all(root.join("b")).expect("mkdir");
+    fs::hard_link(root.join("a/orig.bin"), root.join("b/link.bin")).expect("link");
+    write(&root.join("c/other.bin"), 16 * 1024);
+    full_tree(root, cache.path());
+
+    fs::create_dir_all(root.join("d")).expect("mkdir");
+    fs::hard_link(root.join("b/link.bin"), root.join("d/link2.bin")).expect("link");
+    fs::remove_file(root.join("a/orig.bin")).expect("remove original");
+    thread::sleep(SETTLE);
+    let updated = full_tree(root, cache.path());
+    assert_eq!(updated["source"], "cache");
+    let fresh = fresh_tree(root);
+    assert_eq!(updated["size"], fresh["size"], "hard link charged once");
+    assert_eq!(updated["files"], fresh["files"]);
+
+    fs::remove_file(root.join("b/link.bin")).expect("remove link");
+    fs::remove_file(root.join("d/link2.bin")).expect("remove last link");
+    thread::sleep(SETTLE);
+    let emptied = full_tree(root, cache.path());
+    assert_eq!(emptied["size"], fresh_tree(root)["size"]);
+}
+
+#[test]
+fn damaged_snapshots_fall_back_to_a_full_scan() {
+    let dir = project();
+    let cache = tempfile::tempdir().expect("cache dir");
+    let expected = full_tree(dir.path(), cache.path());
+    let snapshot = snapshot_file(cache.path());
+    let original = fs::read(&snapshot).expect("read snapshot");
+
+    let mut flipped = original.clone();
+    let middle = flipped.len() / 2;
+    flipped[middle] ^= 0xff;
+    let damaged: [(&str, Vec<u8>); 4] = [
+        ("flipped byte", flipped),
+        ("truncated", original[..original.len() / 2].to_vec()),
+        ("garbage", b"definitely not a snapshot".to_vec()),
+        ("empty", Vec::new()),
+    ];
+    for (label, bytes) in damaged {
+        fs::write(&snapshot, bytes).expect("damage snapshot");
+        let recovered = full_tree(dir.path(), cache.path());
+        assert_eq!(recovered["source"], "scan", "{label}");
+        assert_same_tree(&recovered, &expected);
+        assert_eq!(
+            full_tree(dir.path(), cache.path())["source"],
+            "cache",
+            "{label}: repaired"
+        );
+    }
+}
+
+#[test]
+fn fresh_and_no_cache_flags_control_the_snapshot() {
+    let dir = project();
+    let cache = tempfile::tempdir().expect("cache dir");
+
+    let output = cached(
+        &["scan", "-q", "--json", "--no-cache"],
+        dir.path(),
+        cache.path(),
+    );
+    assert_eq!(json(&output)["source"], "scan");
+    assert_eq!(
+        fs::read_dir(cache.path()).expect("cache dir").count(),
+        0,
+        "--no-cache wrote files"
+    );
+
+    full_tree(dir.path(), cache.path());
+    let output = cached(
+        &["scan", "-q", "--json", "--fresh"],
+        dir.path(),
+        cache.path(),
+    );
+    assert_eq!(json(&output)["source"], "scan");
+    assert_eq!(full_tree(dir.path(), cache.path())["source"], "cache");
+}
+
+#[test]
+fn unreadable_directories_are_remembered_and_rechecked() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cache = tempfile::tempdir().expect("cache dir");
+    let root = dir.path();
+    write(&root.join("open/file.bin"), 4096);
+    write(&root.join("locked/secret.bin"), 32 * 1024);
+    fs::set_permissions(root.join("locked"), fs::Permissions::from_mode(0o000)).expect("chmod");
+
+    let first = full_tree(root, cache.path());
+    let again = full_tree(root, cache.path());
+    fs::set_permissions(root.join("locked"), fs::Permissions::from_mode(0o755)).expect("chmod");
+    assert_eq!(first["unreadable"].as_array().expect("issues").len(), 1);
+    assert_eq!(again["source"], "cache");
+    assert_eq!(
+        again["unreadable"].as_array().expect("issues").len(),
+        1,
+        "issue not remembered"
+    );
+
+    thread::sleep(SETTLE);
+    let opened = full_tree(root, cache.path());
+    assert!(opened["unreadable"].as_array().expect("issues").is_empty());
+    assert_same_tree(&opened, &fresh_tree(root));
+}
+
+#[test]
+fn clean_dry_run_uses_the_snapshot_too() {
+    let home = home_fixture();
+    let cache = tempfile::tempdir().expect("cache dir");
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_cl-rs"))
+            .args(["recommend", "-q", "--json"])
+            .env("HOME", home.path())
+            .env("CLRS_CACHE_DIR", cache.path())
+            .stdin(Stdio::null())
+            .output()
+            .expect("run cl-rs")
+    };
+    let first = json(&run());
+    let second = json(&run());
+    assert_eq!(second["source"], "cache");
+    assert_eq!(first["items"], second["items"]);
 }

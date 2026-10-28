@@ -3,13 +3,14 @@
 Fast disk space analyzer and cleaner for macOS. A Rust core library with a CLI on top; a GUI comes later and must reuse the core unchanged.
 
 ## Layout
-- `crates/core` (`clrs-core`): scanner, immutable tree, cleanup rules (`rules.rs`, built-ins in `rules/default.toml`), cleanup actions (`cleanup.rs`), errors. No printing, no CLI concerns.
+- `crates/core` (`clrs-core`): scanner (`scan.rs`), immutable tree (`tree.rs`), saved scans (`cache.rs`, `snapshot.rs`), change journal (`journal.rs`), incremental patching (`update.rs`), cleanup rules (`rules.rs`, built-ins in `rules/default.toml`), cleanup actions (`cleanup.rs`), errors. No printing, no CLI concerns.
 - `crates/cli` (`cl-rs`): arguments (`cli.rs`), commands (`commands.rs`), scan with spinner and Ctrl-C (`scan.rs`), text output (`report.rs`), JSON output (`json.rs`).
-- macOS only. Raw syscalls live in `core/src/sys.rs`; nothing else touches `libc`.
+- macOS only. Raw syscalls and FFI (`libc`, FSEvents) live in `core/src/sys/`; nothing else uses `unsafe`.
 
 ## Commands
 - `cargo fmt --all && cargo clippy --all-targets && cargo test` must be clean (zero warnings) before finishing.
-- Benchmark: `cargo build --release && target/release/cl-rs scan ~ -d 0`. Baseline ~14.5 s and ~385 MB peak RSS on 3.4M files (`/usr/bin/time -l`). Don't regress either.
+- Benchmark: `cargo build --release && target/release/cl-rs scan ~ -d 0`. Baselines on 3.4M files (`/usr/bin/time -l`): cold scan ~14.5 s and ~435 MB peak RSS; repeat scan from the cache under 2 s and ~300 MB. Don't regress them.
+- `crates/gui` is not part of this work; build with `-p clrs-core -p cl-rs`.
 
 ## Code style
 - Rust 2024, rustfmt defaults. Lints are set in the workspace `Cargo.toml` (clippy `pedantic`); fix warnings instead of `#[allow]`ing them, unless there's a clear reason.
@@ -40,6 +41,14 @@ Fast disk space analyzer and cleaner for macOS. A Rust core library with a CLI o
 - Each directory owns one block: a packed name buffer plus an exact-size `Box<[Node]>` of its children, sorted largest first. Workers build and sort blocks during the scan; `Tree::build` only links them breadth-first (no copying). `NodeId` is `(block, index)`.
 - Scan scratch buffers are per-thread and copied into exact-size boxes per directory; don't grow `Vec`s that outlive a directory.
 
+## Saved scans and the change journal
+- A snapshot (`~/Library/Caches/cl-rs/<hash>.snap`, override with `--cache-dir` / `CLRS_CACHE_DIR`) holds the tree, unreadable paths, the volume's FSEvents UUID, and the journal position. It is a cache: any problem loading, replaying or patching it falls back to a full scan.
+- Writes are atomic (private temp file, fsync, rename, mode 0600, dir 0700) and skipped if another process holds the lock. Loading is streaming and validates every length, index and the CRC-32 before trusting anything.
+- FSEvents conventions: per-device stream over the root's subtree; record the event id before a full scan; after replaying to `HistoryDone`, `FlushSync`, then take the checkpoint; dropped events, `RootChanged` and id wraparound force a full scan; `MustScanSubDirs` rescans recursively. The journal is advisory, so snapshots older than 3 days, or 7 days since the last full scan, are rebuilt.
+- Incremental update: each changed directory is rescanned one level; unchanged subdirectories keep their blocks. Sizes are patched up the ancestors with checked arithmetic and any inconsistency falls back to a full scan. `Tree::updated` never mutates blocks shared with another `Tree`.
+- Hard links: FSEvents may report an unlinked hard link under a surviving link's directory, so recorded links are `lstat`ed on every load. A new link to a file not yet tracked as linked cannot be placed, so it triggers a full scan.
+- Cross-volume scans (`-x`) are never cached.
+
 ## Cleanup
 - Rules are TOML (`id`, `name`, `category`, `safety = safe|review`, `paths`, optional `command`, optional `requires_sibling`). Paths start with `~/` or `/`; `*`/`?` match within a component, `**` spans directories but never enters `.app` bundles.
 - Rules match against the scanned `Tree` (no extra disk reads). A rule never matches the scan root, nested matches fold into the enclosing one, and the first rule in file order owns a path.
@@ -56,4 +65,5 @@ Fast disk space analyzer and cleaner for macOS. A Rust core library with a CLI o
 ## Tests
 - E2E only: no unit tests. Tests live in `crates/cli/tests/e2e.rs`, run the real `cl-rs` binary against a `tempfile` tree, and assert on its output.
 - New user-visible behaviour gets an e2e case. Tests must never run a non-dry-run `clean` (it would trash real files or run `npm`); use `--dry-run`.
-- Rule tests set `HOME` to a `tempfile` dir so `~` resolves to the fixture.
+- Rule tests set `HOME` to a `tempfile` dir so `~` resolves to the fixture. Tests that are not about the cache pass `--no-cache`; cache tests use a temp `CLRS_CACHE_DIR`.
+- The key cache test is differential: mutate a tree, update from the snapshot, and require the JSON tree to equal a fresh scan. `scripts/fuzz_cache.py` does this with random operations on a real directory.

@@ -23,6 +23,22 @@ pub enum Error {
     #[error("scan cancelled")]
     Cancelled,
 
+    #[error("cannot read or write cache file {}", path.display())]
+    CacheIo {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+
+    #[error("corrupt cache snapshot: {0}")]
+    CorruptSnapshot(&'static str),
+
+    #[error("change journal unavailable: {0}")]
+    Journal(&'static str),
+
+    #[error("cached tree is inconsistent: {0}")]
+    Inconsistent(&'static str),
+
     #[error("invalid cleanup rules")]
     InvalidRules(#[from] toml::de::Error),
 

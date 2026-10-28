@@ -2,7 +2,7 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use anyhow::Result;
-use clrs_core::{EntryKind, Finding, NodeId, Outcome, Safety, Tree};
+use clrs_core::{EntryKind, Finding, NodeId, Outcome, Safety, Source, Tree};
 use serde::Serialize;
 
 use crate::commands::Cleaned;
@@ -22,6 +22,8 @@ struct Envelope<T> {
     elapsed_ms: u64,
     unreadable: Vec<Issue>,
     full_disk_access_needed: bool,
+    source: &'static str,
+    changed_dirs: Option<usize>,
     #[serde(flatten)]
     data: T,
 }
@@ -75,7 +77,7 @@ pub(crate) fn scan(scan: &Scan, depth: usize, limit: usize) -> Result<()> {
     struct Data {
         tree: TreeNode,
     }
-    let tree = &scan.tree;
+    let tree = scan.tree();
     let mut root = tree_node(tree, tree.root(), depth, limit);
     root.name = lossy(tree.root_path());
     emit(&envelope(scan, Data { tree: root }))
@@ -87,12 +89,12 @@ pub(crate) fn top(scan: &Scan, limit: usize) -> Result<()> {
         files: Vec<FileEntry>,
     }
     let files = scan
-        .tree
+        .tree()
         .largest_files(limit)
         .into_iter()
         .map(|id| FileEntry {
-            path: lossy(&scan.tree.path(id)),
-            size: scan.tree.node(id).size(),
+            path: lossy(&scan.tree().path(id)),
+            size: scan.tree().node(id).size(),
         })
         .collect();
     emit(&envelope(scan, Data { files }))
@@ -162,14 +164,14 @@ pub(crate) fn cleaned(results: &[Cleaned<'_>]) -> Result<()> {
 }
 
 fn envelope<T>(scan: &Scan, data: T) -> Envelope<T> {
-    let root = scan.tree.node(scan.tree.root());
+    let root = scan.tree().node(scan.tree().root());
     Envelope {
-        root: lossy(scan.tree.root_path()),
+        root: lossy(scan.tree().root_path()),
         size: root.size(),
         files: root.files(),
         elapsed_ms: u64::try_from(scan.elapsed.as_millis()).unwrap_or(u64::MAX),
         unreadable: scan
-            .issues
+            .issues()
             .iter()
             .map(|issue| Issue {
                 path: lossy(&issue.path),
@@ -177,6 +179,14 @@ fn envelope<T>(scan: &Scan, data: T) -> Envelope<T> {
             })
             .collect(),
         full_disk_access_needed: scan.needs_full_disk_access(),
+        source: match scan.source() {
+            Source::Scan => "scan",
+            Source::Cache { .. } => "cache",
+        },
+        changed_dirs: match scan.source() {
+            Source::Scan => None,
+            Source::Cache { changed_dirs } => Some(changed_dirs),
+        },
         data,
     }
 }

@@ -22,9 +22,10 @@ pub(crate) fn tree(args: &TreeArgs) -> Result<()> {
     if args.scan.json {
         json::scan(&scan, args.depth, args.limit)?;
     } else {
-        report::tree(&scan.tree, args.depth, args.limit);
-        report::issues(&scan.issues, args.scan.verbose);
+        report::tree(scan.tree(), args.depth, args.limit);
+        report::issues(scan.issues(), args.scan.verbose);
     }
+    scan.save();
     Ok(())
 }
 
@@ -36,9 +37,10 @@ pub(crate) fn top(args: &TopArgs) -> Result<()> {
     if args.scan.json {
         json::top(&scan, args.limit)?;
     } else {
-        report::largest_files(&scan.tree, args.limit);
-        report::issues(&scan.issues, args.scan.verbose);
+        report::largest_files(scan.tree(), args.limit);
+        report::issues(scan.issues(), args.scan.verbose);
     }
+    scan.save();
     Ok(())
 }
 
@@ -46,13 +48,14 @@ pub(crate) fn recommend(args: &RecommendArgs) -> Result<()> {
     let home = home()?;
     let rules = load_rules(&args.rules, &home)?;
     let scan = scan::run(&args.scan, args.scan.path.as_deref().unwrap_or(&home))?;
-    let findings = rules.find(&scan.tree);
+    let findings = rules.find(scan.tree());
     if args.scan.json {
         json::recommend(&scan, &findings)?;
     } else {
         report::recommendations(&findings, &home);
-        report::issues(&scan.issues, args.scan.verbose);
+        report::issues(scan.issues(), args.scan.verbose);
     }
+    scan.save();
     Ok(())
 }
 
@@ -65,8 +68,9 @@ pub(crate) fn clean(args: &CleanArgs) -> Result<()> {
     }
 
     let scan = scan::run(&args.scan, args.scan.path.as_deref().unwrap_or(&home))?;
+    scan.save();
     let selected: Vec<Finding<'_>> = rules
-        .find(&scan.tree)
+        .find(scan.tree())
         .into_iter()
         .filter(|finding| selects(args, finding))
         .collect();

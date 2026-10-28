@@ -2,7 +2,7 @@ use std::error::Error;
 use std::path::Path;
 use std::time::Duration;
 
-use clrs_core::{EntryKind, Finding, NodeId, Outcome, Safety, ScanIssue, Tree};
+use clrs_core::{EntryKind, Finding, NodeId, Outcome, Safety, ScanIssue, Source, Tree};
 
 use crate::commands::Cleaned;
 
@@ -12,10 +12,18 @@ const RECOMMEND_PREVIEW: usize = 20;
 const FULL_DISK_ACCESS_URL: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles";
 
-pub(crate) fn summary(tree: &Tree, issues: &[ScanIssue], elapsed: Duration) {
+pub(crate) fn summary(tree: &Tree, issues: &[ScanIssue], elapsed: Duration, source: Source) {
     let root = tree.node(tree.root());
+    let origin = match source {
+        Source::Scan => "Scanned".to_owned(),
+        Source::Cache { changed_dirs: 0 } => "Loaded from cache (no changes):".to_owned(),
+        Source::Cache { changed_dirs } => format!(
+            "Updated from cache ({} dirs changed):",
+            count(changed_dirs as u64)
+        ),
+    };
     eprintln!(
-        "Scanned {} files, {} in {:.2?}{}",
+        "{origin} {} files, {} in {:.2?}{}",
         count(root.files()),
         bytes(root.size()),
         elapsed,
@@ -192,7 +200,7 @@ pub(crate) fn cleaned(results: &[Cleaned<'_>], home: &Path) {
     }
 }
 
-fn error_chain(error: &dyn Error) -> String {
+pub(crate) fn error_chain(error: &dyn Error) -> String {
     let mut message = error.to_string();
     let mut source = error.source();
     while let Some(cause) = source {

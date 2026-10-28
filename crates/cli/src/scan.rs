@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -6,7 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use clrs_core::{Progress, ScanIssue, Scanner, Tree};
+use clrs_core::{Cache, Cached, Progress, ScanIssue, Scanner, Source, Tree};
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::cli::ScanArgs;
@@ -15,14 +15,32 @@ use crate::report;
 const INTERRUPTED: i32 = 130;
 
 pub(crate) struct Scan {
-    pub(crate) tree: Tree,
-    pub(crate) issues: Vec<ScanIssue>,
+    cached: Cached,
     pub(crate) elapsed: Duration,
 }
 
 impl Scan {
+    pub(crate) fn tree(&self) -> &Tree {
+        &self.cached.tree
+    }
+
+    pub(crate) fn issues(&self) -> &[ScanIssue] {
+        &self.cached.issues
+    }
+
+    pub(crate) fn source(&self) -> Source {
+        self.cached.source
+    }
+
     pub(crate) fn needs_full_disk_access(&self) -> bool {
-        self.issues.iter().any(ScanIssue::needs_full_disk_access)
+        self.issues().iter().any(ScanIssue::needs_full_disk_access)
+    }
+
+    /// Saves the scan for next time. A failure only costs speed, so it is a warning.
+    pub(crate) fn save(&self) {
+        if let Err(error) = self.cached.save() {
+            eprintln!("warning: {}", report::error_chain(&error));
+        }
     }
 }
 
@@ -36,7 +54,12 @@ pub(crate) fn run(args: &ScanArgs, root: &Path) -> Result<Scan> {
     let spinner = (!args.quiet).then(|| spawn_spinner(Arc::clone(&progress)));
 
     let started = Instant::now();
-    let result = scanner.run();
+    let result = match cache_dir(args) {
+        Some(dir) if !args.no_cache => Cache::new(dir).scan(&scanner, args.fresh),
+        _ => scanner
+            .run()
+            .map(|(tree, issues)| Cached::uncached(tree, issues)),
+    };
     let elapsed = started.elapsed();
     scanning.store(false, Ordering::Relaxed);
 
@@ -44,15 +67,17 @@ pub(crate) fn run(args: &ScanArgs, root: &Path) -> Result<Scan> {
         bar.finish_and_clear();
         handle.join().ok();
     }
-    let (tree, issues) = result?;
+    let cached = result?;
     if !args.quiet {
-        report::summary(&tree, &issues, elapsed);
+        report::summary(&cached.tree, &cached.issues, elapsed, cached.source);
     }
-    Ok(Scan {
-        tree,
-        issues,
-        elapsed,
-    })
+    Ok(Scan { cached, elapsed })
+}
+
+fn cache_dir(args: &ScanArgs) -> Option<PathBuf> {
+    args.cache_dir
+        .clone()
+        .or_else(|| std::env::home_dir().map(|home| home.join("Library/Caches/cl-rs")))
 }
 
 fn install_interrupt(progress: &Arc<Progress>, scanning: &Arc<AtomicBool>) -> Result<()> {

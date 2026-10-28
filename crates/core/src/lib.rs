@@ -7,13 +7,18 @@
 #[cfg(not(target_os = "macos"))]
 compile_error!("clrs-core currently supports macOS only");
 
+mod cache;
 mod cleanup;
 mod error;
+mod journal;
 mod rules;
 mod scan;
+mod snapshot;
 mod sys;
 mod tree;
+mod update;
 
+pub use cache::{Cache, Cached, Source};
 pub use cleanup::{Outcome, clean};
 pub use error::{Error, ScanIssue};
 pub use rules::{Finding, Rule, Rules, Safety};
