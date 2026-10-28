@@ -1,6 +1,6 @@
 # cl-rs
 
-Fast disk space analyzer and cleaner for macOS. A Rust core library with a CLI on top; a GUI comes later and must reuse the core unchanged.
+Fast disk space analyzer and cleaner for macOS. A Rust core library shared by the CLI and native GUI; the GUI reuses the core without changing scanner semantics.
 
 ## Layout
 - `crates/core` (`clrs-core`): scanner (`scan.rs`), immutable tree (`tree.rs`), saved scans (`cache.rs`, `snapshot.rs`), change journal (`journal.rs`), incremental patching (`update.rs`), cleanup rules (`rules.rs`, built-ins in `rules/default.toml`), cleanup actions (`cleanup.rs`), errors. No printing, no CLI concerns.
@@ -10,7 +10,8 @@ Fast disk space analyzer and cleaner for macOS. A Rust core library with a CLI o
 ## Commands
 - `cargo fmt --all && cargo clippy --all-targets && cargo test` must be clean (zero warnings) before finishing.
 - Benchmark: `cargo build --release && target/release/cl-rs scan ~ -d 0`. Baselines on 3.4M files (`/usr/bin/time -l`): cold scan ~14.5 s and ~435 MB peak RSS; repeat scan from the cache under 2 s and ~300 MB. Don't regress them.
-- `crates/gui` is not part of this work; build with `-p clrs-core -p cl-rs`.
+- Approved GUI Phase 1 lives in `crates/gui` (`cl-rs-gui`): native GPUI Kit, read-only exploration, no cleanup execution. Build its development bundle with `sh scripts/bundle_gui.sh`; see `crates/gui/README.md` for native validation.
+- Full-workspace checks: `cargo fmt --all && cargo clippy --workspace --all-targets && cargo test --workspace`. For core/CLI-only iterations, use `-p clrs-core -p cl-rs`.
 
 ## Code style
 - Rust 2024, rustfmt defaults. Lints are set in the workspace `Cargo.toml` (clippy `pedantic`); fix warnings instead of `#[allow]`ing them, unless there's a clear reason.
@@ -63,7 +64,7 @@ Fast disk space analyzer and cleaner for macOS. A Rust core library with a CLI o
 - Unreadable paths with `EPERM` trigger the Full Disk Access hint (`ScanIssue::needs_full_disk_access`, `full_disk_access_needed` in JSON).
 
 ## Tests
-- E2E only: no unit tests. Tests live in `crates/cli/tests/e2e.rs`, run the real `cl-rs` binary against a `tempfile` tree, and assert on its output.
+- E2E only: no unit tests. CLI tests live in `crates/cli/tests/e2e.rs`, run the real `cl-rs` binary against a `tempfile` tree, and assert on its output. GUI E2E tests live in `crates/gui/tests/e2e.rs`, launch the real app against isolated fixture/config/cache directories, and drive native accessible controls. This separate opt-in lane needs a logged-in macOS session and Accessibility permission; ignored does not mean passed.
 - New user-visible behaviour gets an e2e case. Tests must never run a non-dry-run `clean` (it would trash real files or run `npm`); use `--dry-run`.
 - Rule tests set `HOME` to a `tempfile` dir so `~` resolves to the fixture. Tests that are not about the cache pass `--no-cache`; cache tests use a temp `CLRS_CACHE_DIR`.
 - The key cache test is differential: mutate a tree, update from the snapshot, and require the JSON tree to equal a fresh scan. `scripts/fuzz_cache.py` does this with random operations on a real directory.

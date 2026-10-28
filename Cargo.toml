@@ -1,6 +1,10 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/cli"]
+members = ["crates/core", "crates/cli", "crates/gui"]
+exclude = ["vendor/gpui-pre-macos"]
+
+[patch.crates-io]
+gpui-pre-macos = { path = "vendor/gpui-pre-macos" }
 
 [workspace.package]
 version = "0.1.0"
