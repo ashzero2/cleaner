@@ -1,0 +1,27 @@
+# Build output
+/target
+**/*.rs.bk
+*.pdb
+
+# Profiling and benchmarks
+*.profraw
+*.profdata
+flamegraph.svg
+perf.data*
+*.trace
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Environment
+.env
+.env.*

@@ -1,0 +1,23 @@
+[package]
+name = "cl-rs"
+description = "Fast disk space analyzer for macOS"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "cl-rs"
+path = "src/main.rs"
+
+[dependencies]
+clrs-core.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+indicatif.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
