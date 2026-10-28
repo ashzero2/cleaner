@@ -25,3 +25,4 @@ perf.data*
 # Environment
 .env
 .env.*
+docs/

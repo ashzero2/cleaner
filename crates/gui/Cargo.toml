@@ -1,0 +1,29 @@
+[package]
+name = "cl-rs-gui"
+description = "Native disk space analyzer for macOS"
+version.workspace = true
+edition.workspace = true
+rust-version = "1.92"
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "cl-rs-gui"
+path = "src/main.rs"
+
+[features]
+ui-capture = ["dep:gpui-capture", "dep:gpui-macos-capture"]
+
+[dependencies]
+clrs-core.workspace = true
+gpui-kit = "=0.8.1"
+gpui-capture = { package = "gpui-pre", version = "=0.3.10", default-features = false, features = ["test-support"], optional = true }
+gpui-macos-capture = { package = "gpui-pre-macos", version = "=0.3.10", features = ["test-support"], optional = true }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
