@@ -3,8 +3,8 @@
 Fast disk space analyzer and cleaner for macOS. A Rust core library with a CLI on top; a GUI comes later and must reuse the core unchanged.
 
 ## Layout
-- `crates/core` (`clrs-core`): scanner, immutable tree, errors. No printing, no CLI concerns.
-- `crates/cli` (`cl-rs`): argument parsing (`cli.rs`), output formatting (`report.rs`), orchestration (`main.rs`).
+- `crates/core` (`clrs-core`): scanner, immutable tree, cleanup rules (`rules.rs`, built-ins in `rules/default.toml`), cleanup actions (`cleanup.rs`), errors. No printing, no CLI concerns.
+- `crates/cli` (`cl-rs`): arguments (`cli.rs`), commands (`commands.rs`), scan with spinner and Ctrl-C (`scan.rs`), text output (`report.rs`), JSON output (`json.rs`).
 - macOS only. Raw syscalls live in `core/src/sys.rs`; nothing else touches `libc`.
 
 ## Commands
@@ -40,10 +40,20 @@ Fast disk space analyzer and cleaner for macOS. A Rust core library with a CLI o
 - Each directory owns one block: a packed name buffer plus an exact-size `Box<[Node]>` of its children, sorted largest first. Workers build and sort blocks during the scan; `Tree::build` only links them breadth-first (no copying). `NodeId` is `(block, index)`.
 - Scan scratch buffers are per-thread and copied into exact-size boxes per directory; don't grow `Vec`s that outlive a directory.
 
-## Cleanup (upcoming)
-- Default action is move to Trash; never `rm` user data directly. Prefer the tool's own command (`npm cache clean`, `ollama rm`, `xcrun simctl`).
-- Every rule is marked as either safe or needs review.
+## Cleanup
+- Rules are TOML (`id`, `name`, `category`, `safety = safe|review`, `paths`, optional `command`, optional `requires_sibling`). Paths start with `~/` or `/`; `*`/`?` match within a component, `**` spans directories but never enters `.app` bundles.
+- Rules match against the scanned `Tree` (no extra disk reads). A rule never matches the scan root, nested matches fold into the enclosing one, and the first rule in file order owns a path.
+- Default action is move to Trash via `NSFileManager`; never `rm` user data directly. A rule `command` (e.g. `npm cache clean --force`) runs instead when its program is installed, otherwise the path is trashed.
+- `core::clean` refuses symlinks and paths fewer than 3 components deep. Safe items are only cleaned with `--safe`; review items need an explicit `--rule <id>`.
+- `clean` needs `--yes` or a terminal prompt (never prompts with `--json`); `--dry-run` previews. Trashing does not free space until the Trash is emptied.
+- Broad rules (e.g. `node_modules`) must use `requires_sibling` so they don't match global installs.
+
+## CLI behaviour
+- `Ctrl-C` during a scan cancels it (`Error::Cancelled`, exit 130); a second press exits immediately. After the scan, Ctrl-C exits 130.
+- `--json` prints one pretty JSON document to stdout; progress, summary and hints stay on stderr.
+- Unreadable paths with `EPERM` trigger the Full Disk Access hint (`ScanIssue::needs_full_disk_access`, `full_disk_access_needed` in JSON).
 
 ## Tests
 - E2E only: no unit tests. Tests live in `crates/cli/tests/e2e.rs`, run the real `cl-rs` binary against a `tempfile` tree, and assert on its output.
-- New user-visible behaviour gets an e2e case.
+- New user-visible behaviour gets an e2e case. Tests must never run a non-dry-run `clean` (it would trash real files or run `npm`); use `--dry-run`.
+- Rule tests set `HOME` to a `tempfile` dir so `~` resolves to the fixture.

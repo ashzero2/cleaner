@@ -5,6 +5,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 const ATTR_CMN_ERROR: u32 = 0x2000_0000;
+pub(crate) const EPERM: i32 = libc::EPERM;
 const VREG: u32 = 1;
 const VDIR: u32 = 2;
 const VLNK: u32 = 5;

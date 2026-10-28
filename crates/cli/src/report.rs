@@ -1,9 +1,16 @@
+use std::error::Error;
+use std::path::Path;
 use std::time::Duration;
 
-use clrs_core::{EntryKind, NodeId, ScanIssue, Tree};
+use clrs_core::{EntryKind, Finding, NodeId, Outcome, Safety, ScanIssue, Tree};
+
+use crate::commands::Cleaned;
 
 const BAR_WIDTH: usize = 20;
 const ISSUE_PREVIEW: usize = 5;
+const RECOMMEND_PREVIEW: usize = 20;
+const FULL_DISK_ACCESS_URL: &str =
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles";
 
 pub(crate) fn summary(tree: &Tree, issues: &[ScanIssue], elapsed: Duration) {
     let root = tree.node(tree.root());
@@ -94,9 +101,113 @@ pub(crate) fn issues(issues: &[ScanIssue], verbose: bool) {
     }
     if issues.len() > shown {
         eprintln!(
-            "… {} more unreadable paths (use --verbose; grant Full Disk Access for a complete scan)",
+            "… {} more unreadable paths (use --verbose to list them)",
             issues.len() - shown
         );
+    }
+
+    let blocked = issues
+        .iter()
+        .filter(|issue| issue.needs_full_disk_access())
+        .count();
+    if blocked > 0 {
+        eprintln!(
+            "\n{} folders need Full Disk Access, so sizes above are incomplete.\n  \
+             1. Open System Settings → Privacy & Security → Full Disk Access\n     \
+             (shortcut: open \"{FULL_DISK_ACCESS_URL}\")\n  \
+             2. Enable your terminal app, restart it, then scan again.",
+            count(blocked as u64),
+        );
+    }
+}
+
+pub(crate) fn recommendations(findings: &[Finding<'_>], home: &Path) {
+    if findings.is_empty() {
+        println!("Nothing to recommend.");
+        return;
+    }
+    for (title, safety) in [
+        ("Safe to remove", Safety::Safe),
+        ("Needs review", Safety::Review),
+    ] {
+        let items: Vec<&Finding<'_>> = findings
+            .iter()
+            .filter(|finding| finding.rule.safety == safety)
+            .collect();
+        if items.is_empty() {
+            continue;
+        }
+        let total: u64 = items.iter().map(|finding| finding.size).sum();
+        println!("{title}: {} in {} items", bytes(total), items.len());
+        print_items(&items[..items.len().min(RECOMMEND_PREVIEW)], home);
+        if items.len() > RECOMMEND_PREVIEW {
+            println!("  … {} more", items.len() - RECOMMEND_PREVIEW);
+        }
+        println!();
+    }
+    println!("Clean with `cl-rs clean --safe` or `cl-rs clean --rule <id>`.");
+}
+
+pub(crate) fn plan(findings: &[Finding<'_>], home: &Path) {
+    let total: u64 = findings.iter().map(|finding| finding.size).sum();
+    println!("Will clean {} in {} items:", bytes(total), findings.len());
+    print_items(&findings.iter().collect::<Vec<_>>(), home);
+}
+
+fn print_items(items: &[&Finding<'_>], home: &Path) {
+    let width = items.iter().map(|f| f.rule.id.len()).max().unwrap_or(0);
+    for finding in items {
+        let action = match &finding.rule.command {
+            Some(argv) => format!("  (runs `{}`)", argv.join(" ")),
+            None => String::new(),
+        };
+        println!(
+            "  {:>10}  {:<width$}  {}{action}",
+            bytes(finding.size),
+            finding.rule.id,
+            tilde(&finding.path, home),
+        );
+    }
+}
+
+pub(crate) fn cleaned(results: &[Cleaned<'_>], home: &Path) {
+    let mut trashed = 0;
+    for cleaned in results {
+        let path = tilde(&cleaned.finding.path, home);
+        match &cleaned.result {
+            Ok(Outcome::Trashed) => {
+                trashed += cleaned.finding.size;
+                println!("✓ moved to Trash  {path}");
+            }
+            Ok(Outcome::CommandRan) => println!("✓ cleaned         {path}"),
+            Ok(Outcome::AlreadyGone) => println!("– already gone    {path}"),
+            Err(error) => println!("✗ failed          {path}: {}", error_chain(error)),
+        }
+    }
+    if trashed > 0 {
+        println!(
+            "\n{} moved to the Trash. Empty the Trash to free the space.",
+            bytes(trashed)
+        );
+    }
+}
+
+fn error_chain(error: &dyn Error) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        message.push_str(": ");
+        message.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    message
+}
+
+pub(crate) fn tilde(path: &Path, home: &Path) -> String {
+    match path.strip_prefix(home) {
+        Ok(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => path.display().to_string(),
     }
 }
 

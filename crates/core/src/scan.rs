@@ -63,7 +63,7 @@ impl Progress {
         }
     }
 
-    /// Requests that the scan stop early. Directories not yet visited are left empty.
+    /// Requests that the running scan stop; [`Scanner::run`] then fails with [`Error::Cancelled`].
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::Relaxed);
     }
@@ -115,8 +115,8 @@ impl Scanner {
     ///
     /// # Errors
     ///
-    /// Fails if the root cannot be accessed, the thread pool cannot start, or the
-    /// tree holds more entries than can be indexed.
+    /// Fails if the root cannot be accessed, the thread pool cannot start, the tree
+    /// holds more entries than can be indexed, or the scan was cancelled.
     pub fn run(&self) -> Result<(Tree, Vec<ScanIssue>), Error> {
         let root = fs::canonicalize(&self.root).map_err(|source| Error::Root {
             path: self.root.clone(),
@@ -146,6 +146,9 @@ impl Scanner {
             .thread_name(|i| format!("clrs-scan-{i}"))
             .build()?;
         let subtree = pool.install(|| walker.walk_dir(&root));
+        if self.progress.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
         let issues = walker
             .issues
             .into_inner()

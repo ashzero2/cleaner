@@ -9,7 +9,10 @@ license.workspace = true
 [dependencies]
 libc.workspace = true
 rayon.workspace = true
+serde.workspace = true
 thiserror.workspace = true
+toml.workspace = true
+trash.workspace = true
 
 [lints]
 workspace = true

@@ -15,13 +15,20 @@ pub(crate) enum Command {
     Scan(TreeArgs),
     /// List the largest files
     Top(TopArgs),
+    /// Find caches, build output and other space that can be reclaimed
+    Recommend(RecommendArgs),
+    /// Move recommended items to the Trash
+    Clean(CleanArgs),
 }
 
 #[derive(Debug, Args)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent command-line flags"
+)]
 pub(crate) struct ScanArgs {
-    /// Directory to scan
-    #[arg(default_value = ".")]
-    pub(crate) path: PathBuf,
+    /// Directory to scan (default: current directory; home for recommend and clean)
+    pub(crate) path: Option<PathBuf>,
 
     /// Worker threads (0 = one per CPU)
     #[arg(short = 'j', long, default_value_t = 0)]
@@ -38,6 +45,10 @@ pub(crate) struct ScanArgs {
     /// List every path that could not be read
     #[arg(short, long)]
     pub(crate) verbose: bool,
+
+    /// Print machine-readable JSON to stdout
+    #[arg(long)]
+    pub(crate) json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -62,4 +73,45 @@ pub(crate) struct TopArgs {
     /// Number of files to list
     #[arg(short = 'n', long, default_value_t = 20)]
     pub(crate) limit: usize,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct RulesArgs {
+    /// Use rules from this TOML file instead of the built-in ones
+    #[arg(long, value_name = "FILE")]
+    pub(crate) rules: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct RecommendArgs {
+    #[command(flatten)]
+    pub(crate) scan: ScanArgs,
+
+    #[command(flatten)]
+    pub(crate) rules: RulesArgs,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct CleanArgs {
+    #[command(flatten)]
+    pub(crate) scan: ScanArgs,
+
+    #[command(flatten)]
+    pub(crate) rules: RulesArgs,
+
+    /// Clean every item marked safe to remove
+    #[arg(long)]
+    pub(crate) safe: bool,
+
+    /// Clean the items of this rule (repeatable; see `recommend` for ids)
+    #[arg(long = "rule", value_name = "ID")]
+    pub(crate) rule: Vec<String>,
+
+    /// Skip the confirmation prompt
+    #[arg(short, long)]
+    pub(crate) yes: bool,
+
+    /// Show what would be cleaned without changing anything
+    #[arg(long)]
+    pub(crate) dry_run: bool,
 }
