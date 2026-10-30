@@ -115,7 +115,8 @@ fn scan_navigate_settings_and_refresh() {
     app.drive("wait", "Review (1)");
     app.drive("wait", "1 staged");
     app.drive("key", "review");
-    app.drive("wait", "Preview only");
+    app.drive("wait", "no space is freed until you empty it");
+    app.drive("wait", "Clean 1 Item");
     app.drive("press", "Done");
     app.drive("press", "Show Treemap");
     app.drive("wait", "Projects, ");
@@ -189,11 +190,12 @@ fn recommendation_group_can_be_staged_and_reviewed() {
     app.drive("wait", "Review (1)");
     app.drive("key", "review");
     app.drive("wait", "npm cache clean --force");
-    app.drive("wait", "Preview only");
+    app.drive("wait", "no space is freed until you empty it");
+    app.drive("wait", "Clean 1 Item");
     app.drive("press", "Done");
     app.quit();
     assert!(
         cache.join("blob").exists(),
-        "review must not delete anything"
+        "the e2e must never run a real clean"
     );
 }

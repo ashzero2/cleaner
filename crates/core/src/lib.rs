@@ -19,7 +19,7 @@ mod tree;
 mod update;
 
 pub use cache::{Cache, Cached, Source};
-pub use cleanup::{Outcome, clean};
+pub use cleanup::{Outcome, clean, clean_target};
 pub use error::{Error, ScanIssue};
 pub use rules::{Finding, Rule, Rules, Safety};
 pub use scan::{Progress, ProgressSnapshot, Scanner};

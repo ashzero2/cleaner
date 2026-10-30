@@ -11,7 +11,7 @@ use gpui_kit::component::table::{DataTable, TableEvent, TableState};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _, Size, StyledExt as _,
-    h_flex, v_flex,
+    WindowExt as _, h_flex, v_flex,
 };
 use gpui_kit::{
     App, AppContext as _, ClickEvent, ClipboardItem, Context, Entity, FocusHandle, Focusable as _,
@@ -70,6 +70,8 @@ pub(crate) struct Workbench {
     results: Option<Results>,
     groups: Vec<recommendations::Group>,
     analysis: Option<Task<()>>,
+    cleaning: Option<Task<()>>,
+    cleaned: Option<String>,
     status: String,
     warning: Option<String>,
     failed: bool,
@@ -159,6 +161,8 @@ impl Workbench {
             results: None,
             groups: Vec::new(),
             analysis: None,
+            cleaning: None,
+            cleaned: None,
             status: "Choose a folder to see what is taking up space.".into(),
             warning: loaded.warning,
             failed: false,
@@ -248,6 +252,9 @@ impl Workbench {
                         format::count(cached.tree.node(cached.tree.root()).files()),
                         format::allocated(cached.tree.node(cached.tree.root()).size())
                     );
+                    if let Some(cleaned) = self.cleaned.take() {
+                        self.status = format!("{cleaned} · {}", self.status);
+                    }
                     self.settings.remember(cached.tree.root_path());
                     self.root = Some(cached.tree.root_path().to_path_buf());
                     let directory = cached.tree.root();
@@ -545,6 +552,8 @@ impl Workbench {
             .staged_roots(tree)
             .into_iter()
             .map(|id| panels::ReviewItem {
+                id,
+                target: tree.path(id),
                 path: format::path(&tree.path(id)),
                 size: tree.node(id).size(),
                 command: self
@@ -569,6 +578,78 @@ impl Workbench {
             roots.len(),
             format::allocated(total)
         ))
+    }
+
+    pub(crate) fn can_clean(&self) -> bool {
+        self.running.is_none() && self.cleaning.is_none()
+    }
+
+    /// Cleans every staged item: runs its rule's command if installed, otherwise moves it
+    /// to the Trash, then rescans so the view reflects what changed.
+    pub(crate) fn clean_staged(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let items = self.review(cx);
+        if items.is_empty() || !self.can_clean() {
+            return;
+        }
+        window.close_sheet(cx);
+        self.status = format!("Cleaning {} items…", items.len());
+        let commands: Vec<Option<Vec<String>>> =
+            items.iter().map(|item| item.command.clone()).collect();
+        self.cleaning = Some(cx.spawn(async move |view, cx| {
+            let outcomes = cx
+                .background_executor()
+                .spawn(async move {
+                    items
+                        .into_iter()
+                        .zip(commands)
+                        .map(|(item, command)| {
+                            let result = clrs_core::clean_target(&item.target, command.as_deref());
+                            (item, result)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .await;
+            let _ = view.update(cx, |this, cx| this.finish_clean(&outcomes, cx));
+        }));
+        cx.notify();
+    }
+
+    fn finish_clean(
+        &mut self,
+        outcomes: &[(
+            panels::ReviewItem,
+            Result<clrs_core::Outcome, clrs_core::Error>,
+        )],
+        cx: &mut Context<Self>,
+    ) {
+        self.cleaning = None;
+        let mut failures = Vec::new();
+        let mut freed = 0;
+        for (item, result) in outcomes {
+            match result {
+                Ok(_) => {
+                    self.selection.staged.remove(&item.id);
+                    freed += item.size;
+                }
+                Err(error) => failures.push(format!("{}: {error}", item.path)),
+            }
+        }
+        let done = outcomes.len() - failures.len();
+        self.cleaned = Some(format!(
+            "Cleaned {done} of {} items ({}; empty the Trash to free it)",
+            outcomes.len(),
+            format::allocated(freed)
+        ));
+        self.sync_staged(cx);
+        self.refresh(false, cx);
+        if !failures.is_empty() {
+            self.warning = Some(format!(
+                "{} items could not be cleaned and stay staged. {}",
+                failures.len(),
+                failures.join("; ")
+            ));
+        }
+        cx.notify();
     }
 
     pub(crate) fn clear_staged(&mut self, cx: &mut Context<Self>) {
@@ -688,6 +769,7 @@ impl Workbench {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn treemap_panel(&self, directory: &Directory, cx: &Context<Self>) -> impl IntoElement + use<> {
         const HEIGHT: f32 = 260.;
         let tree = &directory.cached.tree;
@@ -705,12 +787,16 @@ impl Workbench {
         );
         let hidden = directory.rows.len() - tiles.len();
         let measure = Rc::clone(&self.treemap_size);
+        let view = cx.weak_entity();
         let mut area = div().relative().flex_1().min_h_0().overflow_hidden().child(
             canvas(
-                move |bounds, window, _| {
+                move |bounds, _, cx| {
                     if measure.get() != bounds.size {
                         measure.set(bounds.size);
-                        window.on_next_frame(|window, _| window.refresh());
+                        let view = view.clone();
+                        cx.defer(move |cx| {
+                            let _ = view.update(cx, |_, cx| cx.notify());
+                        });
                     }
                 },
                 |_, (), _, _| {},
@@ -1253,7 +1339,7 @@ impl Workbench {
                         .child(Button::new("home-welcome").label("Scan Home").primary().on_click(cx.listener(|this, _, _window, cx| this.home(cx))))
                         .child(Button::new("start-welcome").label("Choose Folder…").secondary().on_click(cx.listener(|_, _, window, cx| Self::choose(window, cx))))
                 )
-                .child(div().text_color(cx.theme().muted_foreground).child("Read-only exploration. Nothing is moved or deleted.")));
+                .child(div().text_color(cx.theme().muted_foreground).child("Exploring is read-only. Nothing is moved until you review and clean staged items.")));
         }
         content
     }

@@ -1,10 +1,12 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use clrs_core::Cached;
+use clrs_core::{Cached, NodeId};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{
-    ActiveTheme as _, Selectable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme as _, Disableable as _, Selectable as _, StyledExt as _, WindowExt as _, h_flex,
+    v_flex,
 };
 use gpui_kit::{
     App, Context, InteractiveElement as _, IntoElement, ParentElement as _, Role,
@@ -77,19 +79,21 @@ pub(crate) fn settings(window: &mut Window, cx: &mut Context<Workbench>) {
                     }))
             )
             .child(div().text_color(cx.theme().muted_foreground).child("Scan settings apply to the next scan. Cross-volume scans do not use saved scans. Symlinks are never followed."))
-            .child(div().text_color(cx.theme().muted_foreground).child("cl-rs only reads your files. It never moves or deletes anything.")))
+            .child(div().text_color(cx.theme().muted_foreground).child("cl-rs only reads your files while exploring. It moves items to the Trash only when you choose Clean in the review sheet.")))
             .footer(Button::new("done").label("Done").primary().on_click(|_, window, cx| window.close_sheet(cx)))
     });
 }
 
 #[derive(Debug)]
 pub(crate) struct ReviewItem {
+    pub(crate) id: NodeId,
+    pub(crate) target: PathBuf,
     pub(crate) path: String,
     pub(crate) size: u64,
     pub(crate) command: Option<Vec<String>>,
 }
 
-/// Preview of everything staged. Nothing is moved or deleted from here.
+/// Everything staged, with what cleaning each would do, and the button that does it.
 pub(crate) fn review(window: &mut Window, cx: &mut Context<Workbench>) {
     let view = cx.entity();
     window.open_sheet(cx, move |sheet, _, cx| {
@@ -101,10 +105,12 @@ pub(crate) fn review(window: &mut Window, cx: &mut Context<Workbench>) {
         } else {
             format!("{count} items · {} would be recovered once the Trash is emptied.", format::allocated(total))
         };
+        let can_clean = view.read(cx).can_clean();
         let clear = view.clone();
+        let cleaner = view.clone();
         let list = Arc::clone(&items);
         sheet
-            .title("Review Staged Items")
+            .title("Review and Clean")
             .size(px(580.))
             .child(
                 v_flex()
@@ -153,9 +159,9 @@ pub(crate) fn review(window: &mut Window, cx: &mut Context<Workbench>) {
                         div()
                             .id("review-note")
                             .role(Role::Label)
-                            .aria_label("Preview only. cl-rs does not move or delete anything yet.")
+                            .aria_label("Items go to the Trash, so no space is freed until you empty it. Commands run only when the program is installed.")
                             .text_color(cx.theme().muted_foreground)
-                            .child("Preview only. cl-rs does not move or delete anything yet."),
+                            .child("Items go to the Trash, so no space is freed until you empty it. Commands run only when the program is installed."),
                     ),
             )
             .footer(
@@ -165,6 +171,15 @@ pub(crate) fn review(window: &mut Window, cx: &mut Context<Workbench>) {
                         clear.update(cx, Workbench::clear_staged);
                         cx.refresh_windows();
                     }))
+                    .child(
+                        Button::new("clean-staged")
+                            .label(format!("Clean {count} {}", if count == 1 { "Item" } else { "Items" }))
+                            .danger()
+                            .disabled(count == 0 || !can_clean)
+                            .on_click(move |_, window, cx| {
+                                cleaner.update(cx, |this, cx| this.clean_staged(window, cx));
+                            }),
+                    )
                     .child(Button::new("close-review").label("Done").primary().on_click(|_, window, cx| window.close_sheet(cx))),
             )
     });

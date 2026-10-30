@@ -25,10 +25,19 @@ pub enum Outcome {
 /// Fails if the path looks unsafe to touch (too close to the filesystem root, or a
 /// symlink), the command fails, or the Trash move fails.
 pub fn clean(finding: &Finding<'_>) -> Result<Outcome, Error> {
-    let path = &finding.path;
+    clean_target(&finding.path, finding.rule.command.as_deref())
+}
+
+/// Cleans `path` like [`clean`], for callers that hold a path and an optional command
+/// rather than a rule match.
+///
+/// # Errors
+///
+/// The same as [`clean`].
+pub fn clean_target(path: &Path, command: Option<&[String]>) -> Result<Outcome, Error> {
     refuse_unsafe(path)?;
 
-    if let Some(argv) = &finding.rule.command
+    if let Some(argv) = command
         && let Some(outcome) = run_command(argv)?
     {
         return Ok(outcome);
@@ -42,7 +51,7 @@ pub fn clean(finding: &Finding<'_>) -> Result<Outcome, Error> {
     let mut context = TrashContext::default();
     context.set_delete_method(DeleteMethod::NsFileManager);
     context.delete(path).map_err(|source| Error::Trash {
-        path: path.clone(),
+        path: path.to_path_buf(),
         source,
     })?;
     Ok(Outcome::Trashed)
