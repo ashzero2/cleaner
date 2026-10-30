@@ -23,6 +23,13 @@ pub enum Error {
     #[error("scan cancelled")]
     Cancelled,
 
+    #[error("cannot query the volume holding {}", path.display())]
+    Volume {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+
     #[error("cannot read or write cache file {}", path.display())]
     CacheIo {
         path: PathBuf,

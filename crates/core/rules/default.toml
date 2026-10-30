@@ -1,6 +1,7 @@
 [[rule]]
 id = "npm-cache"
 name = "npm cache"
+description = "Packages npm downloaded once. npm fetches them again when a project needs them."
 category = "package-caches"
 safety = "safe"
 paths = ["~/.npm"]
@@ -9,6 +10,7 @@ command = ["npm", "cache", "clean", "--force"]
 [[rule]]
 id = "pnpm-store"
 name = "pnpm store"
+description = "pnpm's shared package store. It refills on the next install."
 category = "package-caches"
 safety = "safe"
 paths = ["~/Library/pnpm/store"]
@@ -16,6 +18,7 @@ paths = ["~/Library/pnpm/store"]
 [[rule]]
 id = "yarn-cache"
 name = "Yarn cache"
+description = "Packages Yarn downloaded once. Yarn fetches them again when a project needs them."
 category = "package-caches"
 safety = "safe"
 paths = ["~/Library/Caches/Yarn", "~/.yarn/berry/cache"]
@@ -23,6 +26,7 @@ paths = ["~/Library/Caches/Yarn", "~/.yarn/berry/cache"]
 [[rule]]
 id = "build-output"
 name = "Next.js & Turbo build output"
+description = "Next.js and Turborepo build output. It is rebuilt the next time the project builds."
 category = "build-output"
 safety = "safe"
 paths = ["~/**/.next", "~/**/.turbo"]
@@ -30,6 +34,7 @@ paths = ["~/**/.next", "~/**/.turbo"]
 [[rule]]
 id = "gradle-caches"
 name = "Gradle caches"
+description = "Dependencies and build caches Gradle keeps. They download again on the next build."
 category = "package-caches"
 safety = "safe"
 paths = ["~/.gradle/caches"]
@@ -37,6 +42,7 @@ paths = ["~/.gradle/caches"]
 [[rule]]
 id = "cargo-registry"
 name = "Cargo registry downloads"
+description = "Crate sources Cargo downloaded. They download again on the next build."
 category = "package-caches"
 safety = "safe"
 paths = ["~/.cargo/registry/cache", "~/.cargo/registry/src", "~/.cargo/git/checkouts"]
@@ -44,6 +50,7 @@ paths = ["~/.cargo/registry/cache", "~/.cargo/registry/src", "~/.cargo/git/check
 [[rule]]
 id = "homebrew-cache"
 name = "Homebrew downloads"
+description = "Installers Homebrew already used. Installed packages keep working."
 category = "package-caches"
 safety = "safe"
 paths = ["~/Library/Caches/Homebrew"]
@@ -51,6 +58,7 @@ paths = ["~/Library/Caches/Homebrew"]
 [[rule]]
 id = "python-caches"
 name = "uv & pip caches"
+description = "Packages uv and pip downloaded once. They download again when needed."
 category = "package-caches"
 safety = "safe"
 paths = ["~/.cache/uv", "~/.cache/pip", "~/Library/Caches/pip"]
@@ -58,6 +66,7 @@ paths = ["~/.cache/uv", "~/.cache/pip", "~/Library/Caches/pip"]
 [[rule]]
 id = "browser-automation"
 name = "Puppeteer & Playwright browsers"
+description = "Browsers downloaded for Puppeteer and Playwright tests. Tests download them again."
 category = "package-caches"
 safety = "safe"
 paths = ["~/.cache/puppeteer", "~/Library/Caches/ms-playwright"]
@@ -65,6 +74,7 @@ paths = ["~/.cache/puppeteer", "~/Library/Caches/ms-playwright"]
 [[rule]]
 id = "cocoapods-cache"
 name = "CocoaPods cache"
+description = "Pods CocoaPods downloaded once. They download again on the next pod install."
 category = "package-caches"
 safety = "safe"
 paths = ["~/Library/Caches/CocoaPods"]
@@ -72,6 +82,7 @@ paths = ["~/Library/Caches/CocoaPods"]
 [[rule]]
 id = "user-logs"
 name = "User logs"
+description = "Log files apps wrote for troubleshooting. Apps start new ones as needed."
 category = "logs"
 safety = "safe"
 paths = ["~/Library/Logs"]
@@ -79,6 +90,7 @@ paths = ["~/Library/Logs"]
 [[rule]]
 id = "xcode-derived-data"
 name = "Xcode DerivedData"
+description = "Xcode build products and indexes. Xcode rebuilds them, so the next build is slower."
 category = "ios-sdks"
 safety = "review"
 paths = ["~/Library/Developer/Xcode/DerivedData"]
@@ -86,6 +98,7 @@ paths = ["~/Library/Developer/Xcode/DerivedData"]
 [[rule]]
 id = "xcode-device-support"
 name = "Xcode device support"
+description = "Debug symbols for devices you connected. Xcode copies them again when you reconnect."
 category = "ios-sdks"
 safety = "review"
 paths = ["~/Library/Developer/Xcode/iOS DeviceSupport"]
@@ -93,6 +106,7 @@ paths = ["~/Library/Developer/Xcode/iOS DeviceSupport"]
 [[rule]]
 id = "xcode-archives"
 name = "Xcode archives"
+description = "Archived app builds. Keep any you still need to upload or symbolicate."
 category = "ios-sdks"
 safety = "review"
 paths = ["~/Library/Developer/Xcode/Archives"]
@@ -100,6 +114,7 @@ paths = ["~/Library/Developer/Xcode/Archives"]
 [[rule]]
 id = "ios-simulators"
 name = "iOS simulators"
+description = "iOS simulator devices and their data. Delete only simulators you no longer test on."
 category = "ios-sdks"
 safety = "review"
 paths = ["~/Library/Developer/CoreSimulator/Devices"]
@@ -108,6 +123,7 @@ command = ["xcrun", "simctl", "delete", "unavailable"]
 [[rule]]
 id = "android-sdk"
 name = "Android SDK"
+description = "Android SDK platforms and system images. Keep it if you still build Android apps."
 category = "android"
 safety = "review"
 paths = ["~/Library/Android/sdk"]
@@ -115,6 +131,7 @@ paths = ["~/Library/Android/sdk"]
 [[rule]]
 id = "android-emulators"
 name = "Android emulator images"
+description = "Disk images for Android emulators. Remove the ones you no longer test on."
 category = "android"
 safety = "review"
 paths = ["~/.android/avd"]
@@ -122,6 +139,7 @@ paths = ["~/.android/avd"]
 [[rule]]
 id = "ollama-models"
 name = "Ollama models"
+description = "Models downloaded for Ollama. You can pull them again later."
 category = "ai-models"
 safety = "review"
 paths = ["~/.ollama/models"]
@@ -129,6 +147,7 @@ paths = ["~/.ollama/models"]
 [[rule]]
 id = "lmstudio-models"
 name = "LM Studio models"
+description = "Models downloaded for LM Studio. You can download them again later."
 category = "ai-models"
 safety = "review"
 paths = ["~/.lmstudio/models"]
@@ -136,6 +155,7 @@ paths = ["~/.lmstudio/models"]
 [[rule]]
 id = "huggingface-cache"
 name = "Hugging Face cache"
+description = "Models and datasets downloaded from Hugging Face. They download again when used."
 category = "ai-models"
 safety = "review"
 paths = ["~/.cache/huggingface"]
@@ -143,6 +163,7 @@ paths = ["~/.cache/huggingface"]
 [[rule]]
 id = "node-modules"
 name = "node_modules"
+description = "Installed project dependencies. Run your package manager's install to get them back."
 category = "code-projects"
 safety = "review"
 paths = ["~/**/node_modules"]
