@@ -30,6 +30,7 @@ struct Document {
 struct RawRule {
     id: String,
     name: String,
+    description: Option<String>,
     category: String,
     safety: Safety,
     paths: Vec<String>,
@@ -45,6 +46,8 @@ struct RawRule {
 pub struct Rule {
     pub id: String,
     pub name: String,
+    /// What the target is and what happens after it is cleaned, in plain language.
+    pub description: Option<String>,
     pub category: String,
     pub safety: Safety,
     pub paths: Vec<String>,
@@ -118,6 +121,7 @@ impl Rules {
             rules.push(Rule {
                 id: raw.id,
                 name: raw.name,
+                description: raw.description,
                 category: raw.category,
                 safety: raw.safety,
                 paths: raw.paths,

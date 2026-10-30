@@ -23,5 +23,5 @@ pub use cleanup::{Outcome, clean, clean_target};
 pub use error::{Error, ScanIssue};
 pub use rules::{Finding, Rule, Rules, Safety};
 pub use scan::{Progress, ProgressSnapshot, Scanner};
-pub use sys::EntryKind;
+pub use sys::{EntryKind, VolumeSpace, volume_space};
 pub use tree::{Node, NodeId, Tree};

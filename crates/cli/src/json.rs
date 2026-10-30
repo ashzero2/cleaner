@@ -56,6 +56,8 @@ struct FileEntry {
 struct Item {
     id: String,
     name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
     category: String,
     safety: &'static str,
     path: String,
@@ -226,6 +228,7 @@ fn item(finding: &Finding<'_>) -> Item {
     Item {
         id: finding.rule.id.clone(),
         name: finding.rule.name.clone(),
+        description: finding.rule.description.clone(),
         category: finding.rule.category.clone(),
         safety: match finding.rule.safety {
             Safety::Safe => "safe",

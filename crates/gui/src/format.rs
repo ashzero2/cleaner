@@ -48,7 +48,11 @@ pub(crate) fn path(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+/// A folder's name for display; the home folder is "Home".
 pub(crate) fn name(path: &Path) -> String {
+    if std::env::home_dir().is_some_and(|home| home == path) {
+        return "Home".to_owned();
+    }
     path.file_name().map_or_else(
         || path.display().to_string(),
         |name| name.to_string_lossy().into_owned(),
@@ -72,4 +76,36 @@ fn is_package(name: &OsStr) -> bool {
             .iter()
             .any(|package| extension.eq_ignore_ascii_case(package))
     })
+}
+
+/// A share as a percentage with one decimal; tiny non-zero shares read "<0.1%".
+pub(crate) fn percent(fraction: f64) -> String {
+    let percent = fraction * 100.;
+    if percent > 0. && percent < 0.1 {
+        "<0.1%".to_owned()
+    } else {
+        format!("{percent:.1}%")
+    }
+}
+
+/// How long ago `elapsed` was, in words.
+pub(crate) fn ago(elapsed: std::time::Duration) -> String {
+    match elapsed.as_secs() {
+        0..=9 => "just now".to_owned(),
+        seconds @ 10..=59 => format!("{seconds} seconds ago"),
+        seconds @ 60..=3599 => match seconds / 60 {
+            1 => "a minute ago".to_owned(),
+            minutes => format!("{minutes} minutes ago"),
+        },
+        seconds => match seconds / 3600 {
+            1 => "an hour ago".to_owned(),
+            hours => format!("{hours} hours ago"),
+        },
+    }
+}
+
+/// `count` with `noun`, pluralised with an "s" when it isn't one: "1 item", "2 items".
+pub(crate) fn plural(count: usize, noun: &str) -> String {
+    let suffix = if count == 1 { "" } else { "s" };
+    format!("{} {noun}{suffix}", self::count(count as u64))
 }

@@ -172,6 +172,18 @@ fn recommend_json_lists_items_and_totals() {
         ids.contains(&"npm-cache") && ids.contains(&"node-modules"),
         "{ids:?}"
     );
+    let npm = report["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|item| item["id"] == "npm-cache")
+        .expect("npm-cache item");
+    assert!(
+        npm["description"]
+            .as_str()
+            .is_some_and(|text| text.contains("npm fetches them again")),
+        "{npm}"
+    );
     assert!(report["safe_bytes"].as_u64().expect("safe_bytes") > 0);
     assert!(report["review_bytes"].as_u64().expect("review_bytes") > 0);
     assert_eq!(report["full_disk_access_needed"], false);

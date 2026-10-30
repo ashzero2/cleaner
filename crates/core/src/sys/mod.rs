@@ -74,8 +74,7 @@ pub(crate) fn is_gone(error: &io::Error) -> bool {
     error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(libc::ENOTDIR)
 }
 
-/// The mount point of the volume that holds `path`.
-pub(crate) fn mount_point(path: &Path) -> io::Result<PathBuf> {
+fn statfs(path: &Path) -> io::Result<libc::statfs> {
     let path = CString::new(path.as_os_str().as_bytes())
         .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
     let mut stat = MaybeUninit::<libc::statfs>::uninit();
@@ -84,10 +83,39 @@ pub(crate) fn mount_point(path: &Path) -> io::Result<PathBuf> {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: `statfs` succeeded, so the struct is fully initialised.
-    let stat = unsafe { stat.assume_init() };
+    Ok(unsafe { stat.assume_init() })
+}
+
+/// The mount point of the volume that holds `path`.
+pub(crate) fn mount_point(path: &Path) -> io::Result<PathBuf> {
+    let stat = statfs(path)?;
     // SAFETY: `f_mntonname` is a NUL-terminated string inside the initialised struct.
     let name = unsafe { CStr::from_ptr(stat.f_mntonname.as_ptr()) };
     Ok(PathBuf::from(OsStr::from_bytes(name.to_bytes())))
+}
+
+/// Size of a volume and the space still available to the current user, in bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VolumeSpace {
+    pub total: u64,
+    pub available: u64,
+}
+
+/// Capacity of the volume that holds `path`.
+///
+/// # Errors
+///
+/// Fails if `path` does not exist or its volume cannot be queried.
+pub fn volume_space(path: &Path) -> Result<VolumeSpace, crate::Error> {
+    let stat = statfs(path).map_err(|source| crate::Error::Volume {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let block = u64::from(stat.f_bsize);
+    Ok(VolumeSpace {
+        total: stat.f_blocks.saturating_mul(block),
+        available: stat.f_bavail.saturating_mul(block),
+    })
 }
 
 #[derive(Debug)]

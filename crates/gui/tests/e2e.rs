@@ -112,25 +112,20 @@ fn scan_navigate_settings_and_refresh() {
     app.drive("wait", "readme.txt");
     app.drive("key", "down");
     app.drive("key", "stage");
-    app.drive("wait", "Review (1)");
-    app.drive("wait", "1 staged");
+    app.drive("wait", "Review 1 item");
+    app.drive("wait", "1 item in tray");
     app.drive("key", "review");
-    app.drive("wait", "no space is freed until you empty it");
-    app.drive("wait", "Clean 1 Item");
-    app.drive("press", "Done");
-    app.drive("press", "Show Treemap");
-    app.drive("wait", "Projects, ");
-    app.drive("press", "Hide Treemap");
-    app.drive("wait", "Show Treemap");
+    app.drive("wait", "so you can still put them back");
+    app.drive("wait", "Move to Trash");
+    app.drive("press", "Cancel");
+    app.drive("wait", "Treemap of the open folder");
+    app.drive("wait", "readme.txt, ");
     app.drive("key", "find");
     app.drive("type", "unique");
     app.drive("wait", "Results for “unique”");
     app.drive("wait", "Projects/unique-nested-file.txt");
     app.drive("press", "Close");
     app.drive("wait", "readme.txt");
-    app.drive("press", "Hide Inspector");
-    app.drive("wait", "Show Inspector");
-    app.drive("press", "Show Inspector");
     app.drive("key", "settings");
     app.drive("wait", "Reuse saved scans");
     app.drive("press", "Dark");
@@ -183,19 +178,42 @@ fn recommendation_group_can_be_staged_and_reviewed() {
     fs::write(home.join("notes.txt"), b"keep").expect("other file");
     let mut app = App::launch_with_home(&home, fixture.path(), Some(&home));
     app.drive("wait", "Full scan");
-    app.drive("wait", "npm cache, ");
-    app.drive("press", "npm cache, 32.7 KB, safe to clean");
-    app.drive("wait", ".npm");
-    app.drive("press", "Stage All");
-    app.drive("wait", "Review (1)");
+    app.drive("wait", ".npm, Folder, safe to clear");
+    app.drive("wait", "32.7 KB safe to clear");
+    app.drive("press", "Suggestions");
+    app.drive("press", "Add all");
+    app.drive("wait", "Review 1 item");
+    app.drive("wait", "1 item in tray, 32.7 KB");
     app.drive("key", "review");
     app.drive("wait", "npm cache clean --force");
-    app.drive("wait", "no space is freed until you empty it");
-    app.drive("wait", "Clean 1 Item");
-    app.drive("press", "Done");
+    app.drive("wait", "so you can still put them back");
+    app.drive("wait", "Move to Trash");
+    app.drive("press", "Cancel");
     app.quit();
     assert!(
         cache.join("blob").exists(),
         "the e2e must never run a real clean"
     );
+}
+
+#[test]
+#[ignore = "needs a logged-in macOS session and Accessibility permission for the test runner"]
+fn locked_folders_are_listed() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let fixture = tempfile::tempdir().expect("fixture");
+    let root = fixture.path().join("scan-root");
+    let locked = root.join("private-stuff");
+    fs::create_dir_all(&locked).expect("locked folder");
+    fs::write(root.join("visible.txt"), b"visible").expect("fixture file");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).expect("lock folder");
+    let mut app = App::launch(&root, fixture.path());
+    app.drive("wait", "Full scan");
+    app.drive("wait", "1 folder locked, view details");
+    app.drive("press", "1 folder locked, view details");
+    app.drive("wait", "1 folder couldn't be read");
+    app.drive("wait", "private-stuff");
+    app.drive("press", "Done");
+    app.quit();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).expect("unlock folder");
 }
