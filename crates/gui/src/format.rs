@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::path::Path;
 
 use clrs_core::EntryKind;
@@ -54,11 +55,21 @@ pub(crate) fn name(path: &Path) -> String {
     )
 }
 
-pub(crate) fn kind(kind: EntryKind) -> &'static str {
+/// Display kind; folders named like macOS bundles are packages.
+pub(crate) fn kind(kind: EntryKind, name: &OsStr) -> &'static str {
     match kind {
         EntryKind::File => "File",
+        EntryKind::Dir if is_package(name) => "Package",
         EntryKind::Dir => "Folder",
         EntryKind::Symlink => "Symlink",
         EntryKind::Other => "Other",
     }
+}
+
+fn is_package(name: &OsStr) -> bool {
+    Path::new(name).extension().is_some_and(|extension| {
+        ["app", "framework", "bundle", "plugin", "kext", "xpc"]
+            .iter()
+            .any(|package| extension.eq_ignore_ascii_case(package))
+    })
 }

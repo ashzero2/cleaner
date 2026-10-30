@@ -87,7 +87,9 @@ case "key":
         "refresh": (15, .maskCommand), "fresh": (15, [.maskCommand, .maskShift]),
         "stop": (47, .maskCommand), "settings": (43, .maskCommand),
         "escape": (53, []), "tab": (48, []), "down": (125, []),
-        "open": (125, .maskCommand), "up": (126, .maskCommand), "quit": (12, .maskCommand)
+        "open": (125, .maskCommand), "up": (126, .maskCommand), "quit": (12, .maskCommand),
+        "find": (3, .maskCommand), "back": (33, .maskCommand), "forward": (30, .maskCommand),
+        "stage": (17, .maskCommand), "review": (14, [.maskCommand, .maskShift])
     ]
     guard let (code, flags) = keys[value] else { fail("Unknown key") }
     guard CGPreflightPostEventAccess() else { fail("Permission to post native events is required.") }
@@ -103,6 +105,22 @@ case "key":
     up.postToPid(pid)
     RunLoop.current.run(until: Date().addingTimeInterval(0.2))
     print("Sent \(value)")
+case "type":
+    guard CGPreflightPostEventAccess() else { fail("Permission to post native events is required.") }
+    NSRunningApplication(processIdentifier: pid)?.activate(options: [])
+    RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+    let source = CGEventSource(stateID: .hidSystemState)
+    for unit in value.utf16 {
+        var character = unit
+        guard let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else { fail("Could not create key event") }
+        down.keyboardSetUnicodeString(stringLength: 1, unicodeString: &character)
+        up.keyboardSetUnicodeString(stringLength: 1, unicodeString: &character)
+        down.postToPid(pid)
+        up.postToPid(pid)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.03))
+    }
+    print("Typed \(value)")
 default:
     fail("Unknown command")
 }

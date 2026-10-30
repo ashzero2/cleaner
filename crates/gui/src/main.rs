@@ -7,9 +7,13 @@ mod explore;
 mod format;
 mod jobs;
 mod panels;
+mod recommendations;
+
+mod search;
 mod selection;
 mod settings;
 mod theme;
+mod treemap;
 mod workbench;
 
 use gpui_kit::{

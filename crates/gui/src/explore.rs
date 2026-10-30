@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use clrs_core::{Cached, EntryKind, NodeId};
@@ -14,12 +15,32 @@ pub(crate) struct Directory {
     pub(crate) cached: Arc<Cached>,
     pub(crate) id: NodeId,
     pub(crate) rows: Vec<NodeId>,
+    /// Rows are search or recommendation results, shown with paths relative to the scan root.
+    results: bool,
+    pub(crate) staged: HashSet<NodeId>,
 }
 
 impl Directory {
     pub(crate) fn new(cached: Arc<Cached>, id: NodeId) -> Self {
         let rows = cached.tree.children(id).collect();
-        Self { cached, id, rows }
+        Self {
+            cached,
+            id,
+            rows,
+            results: false,
+            staged: HashSet::new(),
+        }
+    }
+
+    /// A table of `rows` from anywhere in the scan, with `id` as the folder to return to.
+    pub(crate) fn results(cached: Arc<Cached>, id: NodeId, rows: Vec<NodeId>) -> Self {
+        Self {
+            cached,
+            id,
+            rows,
+            results: true,
+            staged: HashSet::new(),
+        }
     }
 
     pub(crate) fn row(&self, index: usize) -> Option<NodeId> {
@@ -33,10 +54,14 @@ impl Directory {
         let tree = &self.cached.tree;
         let node = tree.node(id);
         match column {
+            0 if self.results => tree.path(id).strip_prefix(tree.root_path()).map_or_else(
+                |_| tree.name(id).to_string_lossy().into_owned(),
+                |path| path.to_string_lossy().into_owned(),
+            ),
             0 => tree.name(id).to_string_lossy().into_owned(),
             1 => format::allocated(node.size()),
             2 if node.kind() == EntryKind::Dir => format::count(node.files()),
-            3 => format::kind(node.kind()).into(),
+            3 => format::kind(node.kind(), tree.name(id)).into(),
             _ => String::new(),
         }
     }
@@ -94,7 +119,12 @@ impl TableDelegate for Directory {
                             .small()
                             .text_color(cx.theme().muted_foreground),
                     )
-                    .child(div().min_w_0().truncate().child(text)),
+                    .child(div().min_w_0().truncate().child(text))
+                    .children(
+                        self.row(row)
+                            .filter(|id| self.staged.contains(id))
+                            .map(|_| div().text_color(cx.theme().primary).child("Staged")),
+                    ),
             );
         } else {
             cell = cell.child(text);

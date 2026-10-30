@@ -24,7 +24,9 @@ gpui::actions!(
         CancelSearch,
         OpenLargestFiles,
         Back,
-        Forward
+        Forward,
+        Find,
+        ClearStaged
     ]
 );
 
@@ -44,9 +46,11 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("cmd-\\", TrashSelection, Some("Workbench")),
         KeyBinding::new("cmd-t", StageSelection, Some("Workbench")),
         KeyBinding::new("cmd-shift-t", UnstageSelection, Some("Workbench")),
-        KeyBinding::new("cmd-shift-r", ReviewChanges, Some("Workbench")),
+        KeyBinding::new("cmd-shift-e", ReviewChanges, Some("Workbench")),
+        KeyBinding::new("cmd-f", Find, Some("Workbench")),
         KeyBinding::new("cmd-l", OpenLargestFiles, Some("Workbench")),
         KeyBinding::new("cmd-[", Back, Some("Workbench")),
+        KeyBinding::new("cmd-]", Forward, Some("Workbench")),
     ]);
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.set_menus([
@@ -64,7 +68,11 @@ pub(crate) fn init(cx: &mut App) {
             MenuItem::action("Stop Scan", StopScan),
         ]),
         Menu::new("View").items([
+            MenuItem::action("Back", Back),
+            MenuItem::action("Forward", Forward),
             MenuItem::action("Enclosing Folder", ParentFolder),
+            MenuItem::action("Find…", Find),
+            MenuItem::action("Largest Files", OpenLargestFiles),
             MenuItem::action("Open Folder", OpenFolder),
             MenuItem::action("Toggle Inspector", ToggleInspector),
             MenuItem::action("Scan Issues", ShowIssues),
@@ -72,6 +80,11 @@ pub(crate) fn init(cx: &mut App) {
         Menu::new("Selection").items([
             MenuItem::action("Reveal in Finder", Reveal),
             MenuItem::action("Copy Path", CopyPath),
+            MenuItem::separator(),
+            MenuItem::action("Stage for Cleanup", StageSelection),
+            MenuItem::action("Unstage", UnstageSelection),
+            MenuItem::action("Clear Staged", ClearStaged),
+            MenuItem::action("Review Staged…", ReviewChanges),
         ]),
     ]);
 }

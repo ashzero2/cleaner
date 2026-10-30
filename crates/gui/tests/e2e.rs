@@ -10,6 +10,10 @@ struct App {
 
 impl App {
     fn launch(root: &Path, fixture: &Path) -> Self {
+        Self::launch_with_home(root, fixture, None)
+    }
+
+    fn launch_with_home(root: &Path, fixture: &Path, home: Option<&Path>) -> Self {
         let contents = fixture.join("cl-rs.app/Contents");
         let executable = contents.join("MacOS/cl-rs-gui");
         fs::create_dir_all(executable.parent().expect("bundle directory")).expect("create bundle");
@@ -28,7 +32,11 @@ impl App {
             "{}",
             String::from_utf8_lossy(&compiled.stderr)
         );
-        let child = Command::new(executable)
+        let mut command = Command::new(executable);
+        if let Some(home) = home {
+            command.env("HOME", home);
+        }
+        let child = command
             .arg(root)
             .env("CLRS_GUI_CONFIG_DIR", fixture.join("config"))
             .env("CLRS_CACHE_DIR", fixture.join("cache"))
@@ -98,6 +106,27 @@ fn scan_navigate_settings_and_refresh() {
     app.drive("wait", "unique-nested-file.txt");
     app.drive("key", "up");
     app.drive("wait", "readme.txt");
+    app.drive("key", "back");
+    app.drive("wait", "unique-nested-file.txt");
+    app.drive("key", "forward");
+    app.drive("wait", "readme.txt");
+    app.drive("key", "down");
+    app.drive("key", "stage");
+    app.drive("wait", "Review (1)");
+    app.drive("wait", "1 staged");
+    app.drive("key", "review");
+    app.drive("wait", "Preview only");
+    app.drive("press", "Done");
+    app.drive("press", "Show Treemap");
+    app.drive("wait", "Projects, ");
+    app.drive("press", "Hide Treemap");
+    app.drive("wait", "Show Treemap");
+    app.drive("key", "find");
+    app.drive("type", "unique");
+    app.drive("wait", "Results for “unique”");
+    app.drive("wait", "Projects/unique-nested-file.txt");
+    app.drive("press", "Close");
+    app.drive("wait", "readme.txt");
     app.drive("press", "Hide Inspector");
     app.drive("wait", "Show Inspector");
     app.drive("press", "Show Inspector");
@@ -136,4 +165,35 @@ fn failed_root_can_be_retried() {
     app.drive("wait", "recovered.txt");
     app.drive("wait", "Full scan");
     app.quit();
+}
+
+#[test]
+#[ignore = "needs a logged-in macOS session and Accessibility permission for the test runner"]
+fn recommendation_group_can_be_staged_and_reviewed() {
+    let fixture = tempfile::tempdir().expect("fixture");
+    let home = fixture
+        .path()
+        .canonicalize()
+        .expect("canonical fixture")
+        .join("home");
+    let cache = home.join(".npm/_cacache");
+    fs::create_dir_all(&cache).expect("npm cache folder");
+    fs::write(cache.join("blob"), vec![7; 32_768]).expect("cache file");
+    fs::write(home.join("notes.txt"), b"keep").expect("other file");
+    let mut app = App::launch_with_home(&home, fixture.path(), Some(&home));
+    app.drive("wait", "Full scan");
+    app.drive("wait", "npm cache, ");
+    app.drive("press", "npm cache, 32.7 KB, safe to clean");
+    app.drive("wait", ".npm");
+    app.drive("press", "Stage All");
+    app.drive("wait", "Review (1)");
+    app.drive("key", "review");
+    app.drive("wait", "npm cache clean --force");
+    app.drive("wait", "Preview only");
+    app.drive("press", "Done");
+    app.quit();
+    assert!(
+        cache.join("blob").exists(),
+        "review must not delete anything"
+    );
 }

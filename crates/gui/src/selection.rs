@@ -4,7 +4,7 @@
 /// navigation.
 use std::collections::HashSet;
 
-use clrs_core::NodeId;
+use clrs_core::{NodeId, Tree};
 
 use crate::explore::Directory;
 
@@ -21,10 +21,9 @@ pub(crate) struct SelectionState {
 
 #[expect(dead_code)]
 impl SelectionState {
-    /// Clear all selections.
+    /// Clear the selection; staged items are kept.
     pub(crate) fn clear(&mut self) {
         self.selected.clear();
-        self.staged.clear();
         self.last_clicked = None;
     }
 
@@ -85,6 +84,27 @@ impl SelectionState {
     /// Check if an item is staged.
     pub(crate) fn is_staged(&self, id: NodeId) -> bool {
         self.staged.contains(&id)
+    }
+
+    /// Staged items not inside another staged item, largest first.
+    pub(crate) fn staged_roots(&self, tree: &Tree) -> Vec<NodeId> {
+        let mut roots: Vec<NodeId> = self
+            .staged
+            .iter()
+            .copied()
+            .filter(|&id| {
+                let mut current = id;
+                while let Some(parent) = tree.parent(current) {
+                    if self.staged.contains(&parent) {
+                        return false;
+                    }
+                    current = parent;
+                }
+                true
+            })
+            .collect();
+        roots.sort_by_key(|&id| std::cmp::Reverse(tree.node(id).size()));
+        roots
     }
 
     /// Stage all selected items.

@@ -82,6 +82,94 @@ pub(crate) fn settings(window: &mut Window, cx: &mut Context<Workbench>) {
     });
 }
 
+#[derive(Debug)]
+pub(crate) struct ReviewItem {
+    pub(crate) path: String,
+    pub(crate) size: u64,
+    pub(crate) command: Option<Vec<String>>,
+}
+
+/// Preview of everything staged. Nothing is moved or deleted from here.
+pub(crate) fn review(window: &mut Window, cx: &mut Context<Workbench>) {
+    let view = cx.entity();
+    window.open_sheet(cx, move |sheet, _, cx| {
+        let items = Arc::new(view.read(cx).review(cx));
+        let total: u64 = items.iter().map(|item| item.size).sum();
+        let count = items.len();
+        let summary = if count == 0 {
+            "Nothing is staged. Select items and choose Stage for Cleanup (Cmd-T), or stage a recommendation.".to_owned()
+        } else {
+            format!("{count} items · {} would be recovered once the Trash is emptied.", format::allocated(total))
+        };
+        let clear = view.clone();
+        let list = Arc::clone(&items);
+        sheet
+            .title("Review Staged Items")
+            .size(px(580.))
+            .child(
+                v_flex()
+                    .h_full()
+                    .gap_4()
+                    .child(
+                        div()
+                            .id("review-summary")
+                            .role(Role::Label)
+                            .aria_label(summary.clone())
+                            .font_semibold()
+                            .child(summary),
+                    )
+                    .child(
+                        uniform_list("review-items", count, move |range, _, cx| {
+                            range
+                                .map(|index| {
+                                    let item = &list[index];
+                                    let action = item.command.as_ref().map_or_else(
+                                        || "Would be moved to the Trash".to_owned(),
+                                        |command| format!("Would run `{}` if installed, otherwise move to the Trash", command.join(" ")),
+                                    );
+                                    v_flex()
+                                        .id(index)
+                                        .role(Role::ListItem)
+                                        .aria_label(format!("{}: {}. {action}", item.path, format::allocated(item.size)))
+                                        .h(px(72.))
+                                        .py_2()
+                                        .gap_1()
+                                        .border_b_1()
+                                        .border_color(cx.theme().border)
+                                        .child(
+                                            h_flex()
+                                                .gap_2()
+                                                .child(div().flex_1().min_w_0().truncate().child(item.path.clone()))
+                                                .child(format::allocated(item.size)),
+                                        )
+                                        .child(div().truncate().text_color(cx.theme().muted_foreground).child(action))
+                                })
+                                .collect()
+                        })
+                        .flex_1()
+                        .min_h_0(),
+                    )
+                    .child(
+                        div()
+                            .id("review-note")
+                            .role(Role::Label)
+                            .aria_label("Preview only. cl-rs does not move or delete anything yet.")
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Preview only. cl-rs does not move or delete anything yet."),
+                    ),
+            )
+            .footer(
+                h_flex()
+                    .gap_2()
+                    .child(Button::new("clear-staged").label("Clear Staged").on_click(move |_, _, cx| {
+                        clear.update(cx, Workbench::clear_staged);
+                        cx.refresh_windows();
+                    }))
+                    .child(Button::new("close-review").label("Done").primary().on_click(|_, window, cx| window.close_sheet(cx))),
+            )
+    });
+}
+
 pub(crate) fn issues(cached: Arc<Cached>, window: &mut Window, cx: &mut App) {
     let needs_access = cached
         .issues

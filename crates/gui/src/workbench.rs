@@ -1,34 +1,53 @@
+use std::cell::Cell;
 use std::path::PathBuf;
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use clrs_core::{Cached, EntryKind, NodeId, Progress, Source};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::table::{DataTable, TableEvent, TableState};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _, Size, StyledExt as _,
     h_flex, v_flex,
 };
 use gpui_kit::{
-    AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Focusable as _,
-    InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render, Role,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, px,
+    App, AppContext as _, ClickEvent, ClipboardItem, Context, Entity, FocusHandle, Focusable as _,
+    InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Pixels, Render,
+    Role, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, canvas, div,
+    px, size,
 };
 
 use crate::actions::{
-    Back, CancelSearch, ChooseFolder, CopyPath, Forward, FreshScan, OpenFolder, OpenSettings,
-    ParentFolder, Refresh, Reveal, ReviewChanges, ScanHome, ShowIssues, StageSelection, StopScan,
-    ToggleInspector, ToggleSelectionMode, TrashSelection, UnstageSelection,
+    Back, CancelSearch, ChooseFolder, ClearStaged, CopyPath, Find, Forward, FreshScan, OpenFolder,
+    OpenLargestFiles, OpenSettings, ParentFolder, Refresh, Reveal, ReviewChanges, ScanHome,
+    ShowIssues, StageSelection, StopScan, ToggleInspector, ToggleSelectionMode, TrashSelection,
+    UnstageSelection,
 };
 use crate::explore::Directory;
 use crate::jobs::{Event, Jobs, ScanRequest};
 use crate::selection::SelectionState;
 use crate::settings::{Appearance, Density, Loaded, Settings};
-use crate::{format, panels, theme};
+use crate::{format, panels, recommendations, search, theme, treemap};
 use std::sync::Arc;
 
 struct Running {
     progress: Arc<Progress>,
     started: Instant,
+}
+
+#[derive(Clone, Copy)]
+enum SearchScope {
+    Folder,
+    Scan,
+}
+
+/// What the table currently lists instead of a folder's children.
+struct Results {
+    title: String,
+    total: usize,
 }
 
 pub(crate) struct Workbench {
@@ -40,6 +59,17 @@ pub(crate) struct Workbench {
     table_subscription: Option<Subscription>,
     selection: SelectionState,
     inspector: bool,
+    treemap: bool,
+    treemap_size: Rc<Cell<gpui_kit::Size<Pixels>>>,
+    history: Vec<NodeId>,
+    history_pos: usize,
+    search: Entity<InputState>,
+    search_scope: SearchScope,
+    search_task: Option<Task<()>>,
+    search_cancel: Arc<AtomicBool>,
+    results: Option<Results>,
+    groups: Vec<recommendations::Group>,
+    analysis: Option<Task<()>>,
     status: String,
     warning: Option<String>,
     failed: bool,
@@ -102,6 +132,13 @@ impl Workbench {
             }
         })
         .detach();
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search names"));
+        cx.subscribe_in(&search, window, |this, _, event, window, cx| {
+            if matches!(event, InputEvent::Change | InputEvent::PressEnter { .. }) {
+                this.run_search(window, cx);
+            }
+        })
+        .detach();
         let mut this = Self {
             settings: loaded.settings,
             jobs,
@@ -111,6 +148,17 @@ impl Workbench {
             table_subscription: None,
             selection: SelectionState::default(),
             inspector: true,
+            treemap: false,
+            treemap_size: Rc::new(Cell::new(size(px(0.), px(0.)))),
+            history: Vec::new(),
+            history_pos: 0,
+            search,
+            search_scope: SearchScope::Folder,
+            search_task: None,
+            search_cancel: Arc::new(AtomicBool::new(false)),
+            results: None,
+            groups: Vec::new(),
+            analysis: None,
             status: "Choose a folder to see what is taking up space.".into(),
             warning: loaded.warning,
             failed: false,
@@ -203,6 +251,9 @@ impl Workbench {
                     self.settings.remember(cached.tree.root_path());
                     self.root = Some(cached.tree.root_path().to_path_buf());
                     let directory = cached.tree.root();
+                    self.history.clear();
+                    self.selection.staged.clear();
+                    self.analyse(Arc::clone(&cached), cx);
                     self.navigate(cached, directory, false, window, cx);
                     self.persist(cx);
                 }
@@ -242,8 +293,59 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.history.get(self.history_pos) != Some(&directory) {
+            if !self.history.is_empty() {
+                self.history.truncate(self.history_pos + 1);
+            }
+            self.history.push(directory);
+            self.history_pos = self.history.len() - 1;
+        }
+        self.open_folder(cached, directory, focus, window, cx);
+    }
+
+    fn travel(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(table) = &self.table else {
+            return;
+        };
+        let target = if forward {
+            Some(self.history_pos + 1)
+        } else {
+            self.history_pos.checked_sub(1)
+        };
+        if let Some((position, &directory)) =
+            target.and_then(|position| Some((position, self.history.get(position)?)))
+        {
+            let cached = Arc::clone(&table.read(cx).delegate().cached);
+            self.history_pos = position;
+            self.open_folder(cached, directory, true, window, cx);
+        }
+    }
+
+    fn open_folder(
+        &mut self,
+        cached: Arc<Cached>,
+        directory: NodeId,
+        focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.cancel_search(cx);
+        self.search
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.results = None;
+        self.install(Directory::new(cached, directory), focus, window, cx);
+    }
+
+    fn install(
+        &mut self,
+        mut delegate: Directory,
+        focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        delegate.staged.clone_from(&self.selection.staged);
         let table = cx.new(|cx| {
-            TableState::new(Directory::new(cached, directory), window, cx)
+            TableState::new(delegate, window, cx)
                 .col_movable(false)
                 .sortable(false)
                 .row_header(false)
@@ -267,7 +369,7 @@ impl Workbench {
                         }
                         TableEvent::DoubleClickedRow(row) => {
                             if let Some(id) = table.read(cx).delegate().row(*row) {
-                                this.selection.toggle(id);
+                                this.selection.select_single(id);
                                 this.open_selected(window, cx);
                             }
                         }
@@ -287,6 +389,191 @@ impl Workbench {
         self.table = Some(table);
         self.selection.clear();
         cx.notify();
+    }
+
+    fn cancel_search(&mut self, _: &mut Context<Self>) {
+        self.search_cancel.store(true, Ordering::Relaxed);
+        self.search_task = None;
+    }
+
+    fn run_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let query = self.search.read(cx).value().trim().to_owned();
+        self.cancel_search(cx);
+        let Some(table) = &self.table else {
+            return;
+        };
+        let directory = table.read(cx).delegate();
+        let (cached, folder) = (Arc::clone(&directory.cached), directory.id);
+        if query.is_empty() {
+            if self.results.take().is_some() {
+                self.install(Directory::new(cached, folder), false, window, cx);
+            }
+            return;
+        }
+        let scope = match self.search_scope {
+            SearchScope::Folder => folder,
+            SearchScope::Scan => cached.tree.root(),
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.search_cancel = Arc::clone(&cancel);
+        self.search_task = Some(cx.spawn_in(window, async move |view, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(150))
+                .await;
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            let (data, needle, flag) = (Arc::clone(&cached), query.clone(), Arc::clone(&cancel));
+            let found = cx
+                .background_executor()
+                .spawn(async move { search::find(&data, scope, &needle, &flag) })
+                .await;
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            let _ = view.update_in(cx, |this, window, cx| {
+                let title = format!("Results for “{query}”");
+                this.show_results(cached, folder, found.ids, title, found.total, window, cx);
+            });
+        }));
+    }
+
+    #[expect(clippy::too_many_arguments)]
+    fn show_results(
+        &mut self,
+        cached: Arc<Cached>,
+        folder: NodeId,
+        rows: Vec<NodeId>,
+        title: String,
+        total: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.results = Some(Results { title, total });
+        self.install(Directory::results(cached, folder, rows), false, window, cx);
+    }
+
+    fn close_results(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_search(cx);
+        let had_results = self.results.is_some();
+        self.search
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        if let Some(table) = &self.table
+            && had_results
+        {
+            let directory = table.read(cx).delegate();
+            let (cached, folder) = (Arc::clone(&directory.cached), directory.id);
+            self.results = None;
+            self.install(Directory::new(cached, folder), true, window, cx);
+        }
+    }
+
+    fn largest_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(table) = &self.table else {
+            return;
+        };
+        let directory = table.read(cx).delegate();
+        let (cached, folder) = (Arc::clone(&directory.cached), directory.id);
+        let rows = cached.tree.largest_files(search::LIMIT);
+        let total = rows.len();
+        self.show_results(
+            cached,
+            folder,
+            rows,
+            "Largest files".into(),
+            total,
+            window,
+            cx,
+        );
+    }
+
+    fn analyse(&mut self, cached: Arc<Cached>, cx: &mut Context<Self>) {
+        self.groups.clear();
+        self.analysis = Some(cx.spawn(async move |view, cx| {
+            let groups = cx
+                .background_executor()
+                .spawn(async move { recommendations::find(&cached) })
+                .await;
+            let _ = view.update(cx, |this, cx| {
+                this.groups = groups;
+                cx.notify();
+            });
+        }));
+    }
+
+    fn show_group(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(table), Some(group)) = (&self.table, self.groups.get(index)) else {
+            return;
+        };
+        let directory = table.read(cx).delegate();
+        let (cached, folder) = (Arc::clone(&directory.cached), directory.id);
+        let (rows, title) = (group.items.clone(), group.name.clone());
+        let total = rows.len();
+        self.cancel_search(cx);
+        self.search
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.show_results(cached, folder, rows, title, total, window, cx);
+    }
+
+    fn sync_staged(&mut self, cx: &mut Context<Self>) {
+        if let Some(table) = &self.table {
+            let staged = self.selection.staged.clone();
+            table.update(cx, |table, cx| {
+                table.delegate_mut().staged = staged;
+                cx.notify();
+            });
+        }
+        cx.notify();
+    }
+
+    fn stage_rows(&mut self, cx: &mut Context<Self>) {
+        if let Some(table) = &self.table {
+            let rows = table.read(cx).delegate().rows.clone();
+            self.selection.staged.extend(rows);
+            self.sync_staged(cx);
+        }
+    }
+
+    /// Staged items worth reviewing: what each is, its size, and the command that replaces
+    /// moving it to the Trash.
+    pub(crate) fn review(&self, cx: &App) -> Vec<panels::ReviewItem> {
+        let Some(table) = &self.table else {
+            return Vec::new();
+        };
+        let tree = &table.read(cx).delegate().cached.tree;
+        self.selection
+            .staged_roots(tree)
+            .into_iter()
+            .map(|id| panels::ReviewItem {
+                path: format::path(&tree.path(id)),
+                size: tree.node(id).size(),
+                command: self
+                    .groups
+                    .iter()
+                    .find(|group| group.items.contains(&id))
+                    .and_then(|group| group.command.clone()),
+            })
+            .collect()
+    }
+
+    fn staged_summary(&self, cx: &App) -> Option<String> {
+        let table = self.table.as_ref()?;
+        if self.selection.staged.is_empty() {
+            return None;
+        }
+        let tree = &table.read(cx).delegate().cached.tree;
+        let roots = self.selection.staged_roots(tree);
+        let total: u64 = roots.iter().map(|&id| tree.node(id).size()).sum();
+        Some(format!(
+            "{} staged · {}",
+            roots.len(),
+            format::allocated(total)
+        ))
+    }
+
+    pub(crate) fn clear_staged(&mut self, cx: &mut Context<Self>) {
+        self.selection.staged.clear();
+        self.sync_staged(cx);
     }
 
     fn choose(window: &mut Window, cx: &mut Context<Self>) {
@@ -338,6 +625,26 @@ impl Workbench {
         }
     }
 
+    fn pick_tile(
+        &mut self,
+        row: usize,
+        clicks: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(table) = self.table.clone() else {
+            return;
+        };
+        if clicks >= 2 {
+            if let Some(id) = table.read(cx).delegate().row(row) {
+                self.selection.select_single(id);
+                self.open_selected(window, cx);
+            }
+        } else {
+            table.update(cx, |table, cx| table.set_selected_row(row, cx));
+        }
+    }
+
     fn parent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(table) = &self.table {
             let directory = table.read(cx).delegate();
@@ -381,6 +688,108 @@ impl Workbench {
         }
     }
 
+    fn treemap_panel(&self, directory: &Directory, cx: &Context<Self>) -> impl IntoElement + use<> {
+        const HEIGHT: f32 = 260.;
+        let tree = &directory.cached.tree;
+        let dark = cx.theme().is_dark();
+        let measured = self.treemap_size.get();
+        let sizes: Vec<u64> = directory
+            .rows
+            .iter()
+            .map(|&id| tree.node(id).size())
+            .collect();
+        let tiles = treemap::layout(
+            &sizes,
+            f32::from(measured.width),
+            f32::from(measured.height),
+        );
+        let hidden = directory.rows.len() - tiles.len();
+        let measure = Rc::clone(&self.treemap_size);
+        let mut area = div().relative().flex_1().min_h_0().overflow_hidden().child(
+            canvas(
+                move |bounds, window, _| {
+                    if measure.get() != bounds.size {
+                        measure.set(bounds.size);
+                        window.on_next_frame(|window, _| window.refresh());
+                    }
+                },
+                |_, (), _, _| {},
+            )
+            .absolute()
+            .size_full(),
+        );
+        for tile in &tiles {
+            let row = tile.row;
+            let id = directory.rows[row];
+            let node = tree.node(id);
+            let name = tree.name(id).to_string_lossy().into_owned();
+            let allocated = format::allocated(node.size());
+            let label = format!("{name}, {allocated}");
+            let color = treemap::fill(row, node.kind() == EntryKind::Dir, dark);
+            let selected = self.selection.is_selected(id);
+            let tooltip = format!(
+                "{name}\n{allocated} · {}",
+                format::kind(node.kind(), tree.name(id))
+            );
+            let mut cell = div()
+                .id(("tile", row))
+                .role(Role::ListItem)
+                .aria_label(label)
+                .absolute()
+                .left(px(tile.x + 0.5))
+                .top(px(tile.y + 0.5))
+                .w(px((tile.width - 1.).max(1.)))
+                .h(px((tile.height - 1.).max(1.)))
+                .p_1()
+                .overflow_hidden()
+                .rounded(px(3.))
+                .border_2()
+                .border_color(if selected { cx.theme().primary } else { color })
+                .bg(color)
+                .cursor_pointer()
+                .hover(|style| style.opacity(0.8))
+                .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                    this.pick_tile(row, event.click_count(), window, cx);
+                }));
+            if tile.width >= 72. && tile.height >= 36. {
+                cell = cell
+                    .child(div().truncate().font_semibold().child(name))
+                    .child(
+                        div()
+                            .truncate()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(allocated),
+                    );
+            }
+            area = area.child(cell);
+        }
+        if tiles.is_empty() {
+            area = area.child(
+                div()
+                    .p_4()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Nothing with allocated space in this folder."),
+            );
+        }
+        let mut panel = v_flex()
+            .h(px(HEIGHT))
+            .flex_shrink_0()
+            .p_2()
+            .gap_1()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(area);
+        if hidden > 0 {
+            panel = panel.child(div().text_color(cx.theme().muted_foreground).child(format!(
+                "{} smaller items are listed below but not drawn.",
+                format::count(hidden as u64)
+            )));
+        }
+        panel
+    }
+
+    #[allow(clippy::too_many_lines)]
     fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let current_root = &self.root;
         let mut sidebar = v_flex()
@@ -422,7 +831,61 @@ impl Workbench {
                         .w_full()
                         .on_click(cx.listener(|_, _, window, cx| Self::choose(window, cx))),
                 ),
+            )
+            .child(
+                h_flex().w_full().justify_start().child(
+                    Button::new("largest-files")
+                        .label("Largest Files")
+                        .ghost()
+                        .w_full()
+                        .disabled(self.table.is_none())
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.largest_files(window, cx)),
+                        ),
+                ),
             );
+        if !self.groups.is_empty() {
+            sidebar = sidebar.child(
+                div()
+                    .px_2()
+                    .pt_5()
+                    .pb_1()
+                    .font_semibold()
+                    .text_color(cx.theme().foreground)
+                    .child("Recommendations"),
+            );
+            for (index, group) in self.groups.iter().take(6).enumerate() {
+                let note = match group.safety {
+                    clrs_core::Safety::Safe => "safe to clean",
+                    clrs_core::Safety::Review => "review first",
+                };
+                sidebar = sidebar.child(
+                    v_flex()
+                        .id(("recommendation", index))
+                        .role(Role::Button)
+                        .aria_label(format!(
+                            "{}, {}, {note}",
+                            group.name,
+                            format::allocated(group.size)
+                        ))
+                        .px_2()
+                        .py_1()
+                        .rounded(px(6.))
+                        .cursor_pointer()
+                        .hover(|style| style.bg(cx.theme().sidebar_accent))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.show_group(index, window, cx);
+                        }))
+                        .child(div().truncate().child(group.name.clone()))
+                        .child(
+                            div()
+                                .truncate()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!("{} · {note}", format::allocated(group.size))),
+                        ),
+                );
+            }
+        }
         if !self.settings.recent.is_empty() {
             sidebar = sidebar.child(
                 div()
@@ -495,7 +958,11 @@ impl Workbench {
                     format!("{} ({} bytes)", format::allocated(node.size()), node.size()),
                     cx,
                 ))
-                .child(panels::detail("Kind", format::kind(node.kind()).into(), cx));
+                .child(panels::detail(
+                    "Kind",
+                    format::kind(node.kind(), directory.cached.tree.name(id)).into(),
+                    cx,
+                ));
             if node.kind() == EntryKind::Dir {
                 panel = panel.child(panels::detail("Files", format::count(node.files()), cx));
             }
@@ -503,6 +970,25 @@ impl Workbench {
                 .child(Button::new("reveal").label("Reveal in Finder").primary().on_click(cx.listener(|this, _, _, cx| this.reveal(cx))))
                 .child(Button::new("copy-path").label("Copy Path").on_click(cx.listener(|this, _, _, cx| this.copy_path(cx))))
                 .child(div().text_color(cx.theme().muted_foreground).child("Sizes use allocated disk space. Hard links count once; symlinks are not followed."));
+            if self.selection.has_selection() {
+                let staged = self.selection.is_staged(id);
+                panel = panel.child(
+                    Button::new("stage")
+                        .label(if staged {
+                            "Unstage"
+                        } else {
+                            "Stage for Cleanup"
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if staged {
+                                this.selection.unstage_all();
+                            } else {
+                                this.selection.stage_all();
+                            }
+                            this.sync_staged(cx);
+                        })),
+                );
+            }
         }
         panel
     }
@@ -517,6 +1003,25 @@ impl Workbench {
             .border_b_1()
             .border_color(cx.theme().border)
             .child(div().font_semibold().child("Explore"))
+            .child(div().w(px(12.)))
+            .child(Input::new(&self.search).w(px(240.)).cleanable(true))
+            .child(
+                Button::new("search-scope")
+                    .label(match self.search_scope {
+                        SearchScope::Folder => "This folder",
+                        SearchScope::Scan => "Entire scan",
+                    })
+                    .ghost()
+                    .disabled(self.table.is_none())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.search_scope = match this.search_scope {
+                            SearchScope::Folder => SearchScope::Scan,
+                            SearchScope::Scan => SearchScope::Folder,
+                        };
+                        this.run_search(window, cx);
+                        cx.notify();
+                    })),
+            )
             .child(div().flex_1())
             .child(
                 Button::new("choose-folder")
@@ -550,6 +1055,27 @@ impl Workbench {
                     cx.notify();
                 })),
         );
+        toolbar = toolbar.child(
+            Button::new("toggle-treemap")
+                .label(if self.treemap {
+                    "Hide Treemap"
+                } else {
+                    "Show Treemap"
+                })
+                .ghost()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.treemap = !this.treemap;
+                    cx.notify();
+                })),
+        );
+        if !self.selection.staged.is_empty() {
+            toolbar = toolbar.child(
+                Button::new("review")
+                    .label(format!("Review ({})", self.selection.staged.len()))
+                    .primary()
+                    .on_click(cx.listener(|_, _, window, cx| panels::review(window, cx))),
+            );
+        }
         toolbar
     }
 
@@ -594,6 +1120,24 @@ impl Workbench {
                 .min_w_0()
                 .overflow_hidden()
                 .child(
+                    Button::new("back")
+                        .label("Back")
+                        .small()
+                        .ghost()
+                        .disabled(self.history_pos == 0)
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.travel(false, window, cx)),
+                        ),
+                )
+                .child(
+                    Button::new("forward")
+                        .label("Forward")
+                        .small()
+                        .ghost()
+                        .disabled(self.history_pos + 1 >= self.history.len())
+                        .on_click(cx.listener(|this, _, window, cx| this.travel(true, window, cx))),
+                )
+                .child(
                     Button::new("parent")
                         .label("Up")
                         .small()
@@ -635,6 +1179,59 @@ impl Workbench {
                         .on_click(cx.listener(|this, _, window, cx| this.issues(window, cx))),
                 );
             }
+            if let Some(results) = &self.results {
+                let shown = directory.rows.len();
+                let detail = if results.total > shown {
+                    format!(
+                        "Showing the largest {} of {}",
+                        format::count(shown as u64),
+                        format::count(results.total as u64)
+                    )
+                } else {
+                    format!("{} items", format::count(shown as u64))
+                };
+                content = content.child(
+                    h_flex()
+                        .px_3()
+                        .py_2()
+                        .gap_2()
+                        .bg(cx.theme().muted)
+                        .child(
+                            div()
+                                .id("results-title")
+                                .role(Role::Label)
+                                .aria_label(results.title.clone())
+                                .font_semibold()
+                                .child(results.title.clone()),
+                        )
+                        .child(
+                            div()
+                                .id("results-detail")
+                                .role(Role::Label)
+                                .aria_label(detail.clone())
+                                .text_color(cx.theme().muted_foreground)
+                                .child(detail),
+                        )
+                        .child(div().flex_1())
+                        .child(
+                            Button::new("stage-results")
+                                .label("Stage All")
+                                .small()
+                                .on_click(cx.listener(|this, _, _, cx| this.stage_rows(cx))),
+                        )
+                        .child(
+                            Button::new("close-results")
+                                .label("Close")
+                                .small()
+                                .ghost()
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.close_results(window, cx);
+                                })),
+                        ),
+                );
+            } else if self.treemap {
+                content = content.child(self.treemap_panel(directory, cx));
+            }
             content = content.child(
                 div().flex_1().min_h_0().child(
                     DataTable::new(table)
@@ -664,6 +1261,7 @@ impl Workbench {
 
 impl Render for Workbench {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let staged = self.staged_summary(cx);
         let toolbar = self.toolbar(cx);
         let content = self.content(cx);
         let mut body = h_flex()
@@ -710,44 +1308,51 @@ impl Render for Workbench {
                 this.selection.selected.clear();
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &TrashSelection, _, cx| {
-                this.selection.selected.clear();
-                cx.notify();
+            .on_action(cx.listener(|this, _: &TrashSelection, window, cx| {
+                this.selection.stage_all();
+                this.sync_staged(cx);
+                panels::review(window, cx);
             }))
             .on_action(cx.listener(|this, _: &StageSelection, _, cx| {
                 this.selection.stage_all();
-                cx.notify();
+                this.sync_staged(cx);
             }))
             .on_action(cx.listener(|this, _: &UnstageSelection, _, cx| {
-                this.selection.selected.clear();
-                cx.notify();
+                this.selection.unstage_all();
+                this.sync_staged(cx);
             }))
-            .on_action(cx.listener(|_, _: &Back, _window, _cx| {
-                // Placeholder - implement history later
+            .on_action(cx.listener(|this, _: &ClearStaged, _, cx| this.clear_staged(cx)))
+            .on_action(cx.listener(|this, _: &Back, window, cx| this.travel(false, window, cx)))
+            .on_action(cx.listener(|this, _: &Forward, window, cx| this.travel(true, window, cx)))
+            .on_action(cx.listener(|this, _: &Find, window, cx| {
+                this.search.update(cx, |input, cx| input.focus(window, cx));
             }))
-            .on_action(cx.listener(|_, _: &Forward, _window, _cx| {
-                // Placeholder - implement history later
+            .on_action(cx.listener(|this, _: &CancelSearch, window, cx| {
+                this.close_results(window, cx);
             }))
-            .on_action(cx.listener(|_, _: &CancelSearch, _window, _cx| {
-                // Placeholder - implement search later
+            .on_action(cx.listener(|this, _: &OpenLargestFiles, window, cx| {
+                this.largest_files(window, cx);
             }))
-            .on_action(cx.listener(|_, _: &ReviewChanges, _window, _cx| {
-                // Placeholder - implement review later
-            }))
+            .on_action(cx.listener(|_, _: &ReviewChanges, window, cx| panels::review(window, cx)))
             .child(toolbar)
             .child(body)
             .child(
-                div()
+                h_flex()
                     .id("scan-status")
                     .role(Role::Status)
-                    .aria_label(self.status.clone())
+                    .aria_label(staged.as_ref().map_or_else(
+                        || self.status.clone(),
+                        |staged| format!("{} · {staged}", self.status),
+                    ))
                     .h(px(30.))
                     .px_4()
                     .py_1()
                     .border_t_1()
                     .border_color(cx.theme().border)
                     .text_color(cx.theme().muted_foreground)
-                    .child(self.status.clone()),
+                    .child(self.status.clone())
+                    .child(div().flex_1())
+                    .children(staged),
             )
     }
 }
