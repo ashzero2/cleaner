@@ -1,4 +1,4 @@
-use clrs_core::{EntryKind, NodeId, Safety, Tree};
+use clrs_core::{NodeId, Safety, Tree};
 
 use crate::category::{self, Category};
 use crate::recommendations::Suggestions;
@@ -106,18 +106,6 @@ pub(crate) const LABEL_WIDTH: f32 = 48.;
 pub(crate) const LABEL_HEIGHT: f32 = 28.;
 /// Area a tile needs before its label is readable, used to fold unlabeled tiles away.
 const LABEL_AREA: f64 = LABEL_WIDTH as f64 * LABEL_HEIGHT as f64;
-/// Children drawn inside a tile large enough to show them.
-const MAX_NESTED: usize = 8;
-/// Smallest share of the parent drawn as its own nested tile.
-const NESTED_MIN_SHARE: f64 = 0.04;
-/// Rendered nested tile size needed for a readable label.
-pub(crate) const NESTED_LABEL_WIDTH: f32 = 56.;
-pub(crate) const NESTED_LABEL_HEIGHT: f32 = 22.;
-/// Area a nested tile needs before its label is readable.
-const NESTED_LABEL_AREA: f64 = NESTED_LABEL_WIDTH as f64 * NESTED_LABEL_HEIGHT as f64;
-const NESTED_MIN: f32 = 110.;
-const NESTED_TOP: f32 = 44.;
-const NESTED_INSET: f32 = 6.;
 
 /// One drawn tile, ready to render.
 #[derive(Debug)]
@@ -128,19 +116,6 @@ pub(crate) struct Block {
     pub(crate) size: u64,
     pub(crate) category: Category,
     pub(crate) safety: Option<Safety>,
-    pub(crate) x: f32,
-    pub(crate) y: f32,
-    pub(crate) width: f32,
-    pub(crate) height: f32,
-    pub(crate) nested: Vec<Nested>,
-}
-
-#[derive(Debug)]
-pub(crate) struct Nested {
-    /// `None` for the tile that stands for the children too small to draw.
-    pub(crate) id: Option<NodeId>,
-    pub(crate) name: String,
-    pub(crate) size: u64,
     pub(crate) x: f32,
     pub(crate) y: f32,
     pub(crate) width: f32,
@@ -197,60 +172,6 @@ fn labelled_layout(
     }
 }
 
-/// Lays out the children drawn inside one large tile.
-fn nested_blocks(tree: &Tree, id: NodeId, width: f32, height: f32) -> Vec<Nested> {
-    let inner: Vec<NodeId> = tree.children(id).collect();
-    let area = f64::from(width) * f64::from(height);
-    let min_share = if area > 0. {
-        (NESTED_LABEL_AREA / area).max(NESTED_MIN_SHARE)
-    } else {
-        NESTED_MIN_SHARE
-    };
-    let drawn = inner
-        .iter()
-        .take(MAX_NESTED - 1)
-        .take_while(|&&child| {
-            crate::ui::share(tree.node(child).size(), tree.node(id).size()) >= min_share
-        })
-        .count();
-    let rest = &inner[drawn..];
-    let tail: u64 = rest.iter().map(|&child| tree.node(child).size()).sum();
-    let mut entries: Entries = inner[..drawn]
-        .iter()
-        .map(|&child| (Some(child), tree.node(child).size()))
-        .collect();
-    if tail > 0 {
-        let at = entries.partition_point(|&(_, size)| size >= tail);
-        entries.insert(at, (None, tail));
-    }
-    let (entries, tiles, merged) = labelled_layout(
-        entries,
-        width,
-        height,
-        NESTED_LABEL_WIDTH + TILE_GAP,
-        NESTED_LABEL_HEIGHT + TILE_GAP,
-    );
-    let tail_count = rest.len() + merged;
-    tiles
-        .into_iter()
-        .map(|tile| {
-            let (child, size) = entries[tile.row];
-            Nested {
-                id: child,
-                name: child.map_or_else(
-                    || format!("+{}", crate::format::count(tail_count as u64)),
-                    |child| tree.name(child).to_string_lossy().into_owned(),
-                ),
-                size,
-                x: tile.x + NESTED_INSET,
-                y: tile.y + NESTED_TOP,
-                width: tile.width,
-                height: tile.height,
-            }
-        })
-        .collect()
-}
-
 /// Lays out `folder`'s children as tiles in a `width` × `height` area, folding entries
 /// smaller than [`MIN_SHARE`] (or beyond [`MAX_TILES`]) into one "smaller items" tile.
 pub(crate) fn blocks(
@@ -298,7 +219,7 @@ pub(crate) fn blocks(
             let Some(id) = id else {
                 return Block {
                     id: None,
-                    name: format!("+{}", crate::format::count(tail_count as u64)),
+                    name: format!("{} smaller items", crate::format::count(tail_count as u64)),
                     size,
                     category: Category::Other,
                     safety: None,
@@ -306,21 +227,7 @@ pub(crate) fn blocks(
                     y: tile.y,
                     width: tile.width,
                     height: tile.height,
-                    nested: Vec::new(),
                 };
-            };
-            let nested = if tile.width >= NESTED_MIN
-                && tile.height >= NESTED_MIN
-                && tree.node(id).kind() == EntryKind::Dir
-            {
-                nested_blocks(
-                    tree,
-                    id,
-                    (tile.width - 2. * NESTED_INSET).max(0.),
-                    (tile.height - NESTED_TOP - NESTED_INSET).max(0.),
-                )
-            } else {
-                Vec::new()
             };
             Block {
                 id: Some(id),
@@ -332,7 +239,6 @@ pub(crate) fn blocks(
                 y: tile.y,
                 width: tile.width,
                 height: tile.height,
-                nested,
             }
         })
         .collect()

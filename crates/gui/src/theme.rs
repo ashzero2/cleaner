@@ -8,8 +8,8 @@ use crate::category::Category;
 use crate::settings::Appearance;
 
 pub(crate) const SIDEBAR_WIDTH: f32 = 210.;
-pub(crate) const MIN_WIDTH: f32 = 1040.;
-pub(crate) const MIN_HEIGHT: f32 = 680.;
+pub(crate) const MIN_WIDTH: f32 = 720.;
+pub(crate) const MIN_HEIGHT: f32 = 560.;
 
 /// SF Pro Rounded and SF Mono ship with macOS but are hidden families, so they are loaded
 /// from the system font folder at startup instead of being bundled.
@@ -41,8 +41,6 @@ pub(crate) struct Palette {
     pub(crate) review_soft: Hsla,
     pub(crate) danger: Hsla,
     pub(crate) tile_ink: Hsla,
-    /// Overlay for nested treemap tiles.
-    pub(crate) shade: Hsla,
     pub(crate) shadow: Hsla,
     categories: [Hsla; Category::ALL.len()],
 }
@@ -77,11 +75,6 @@ impl Palette {
             review_soft: c(0x00fb_efd6, 0x003d_2e12),
             danger: c(0x00b2_2d3b, 0x00ff_99a5),
             tile_ink: c(0x002e_2522, 0x001e_1817),
-            shade: if dark {
-                gpui_kit::hsla(0., 0., 0., 0.16)
-            } else {
-                gpui_kit::hsla(0., 0., 1., 0.32)
-            },
             shadow: if dark {
                 gpui_kit::hsla(0., 0., 0., 0.3)
             } else {

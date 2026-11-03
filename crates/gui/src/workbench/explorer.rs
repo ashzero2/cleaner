@@ -62,13 +62,6 @@ impl Workbench {
                 self.welcome(cx).into_any_element()
             });
         }
-        let chart = v_flex()
-            .w(relative(0.40))
-            .flex_shrink_0()
-            .min_h_0()
-            .gap(px(12.))
-            .child(self.treemap(window, cx))
-            .child(self.legend(cx));
         let list = v_flex()
             .flex_1()
             .min_w_0()
@@ -76,15 +69,23 @@ impl Workbench {
             .gap(px(12.))
             .child(self.list(cx))
             .child(self.detail(cx));
-        main.child(self.summary(window, cx)).child(
-            h_flex()
-                .flex_1()
-                .min_h_0()
-                .items_stretch()
-                .gap(px(16.))
-                .child(chart)
-                .child(list),
-        )
+        let body = h_flex()
+            .flex_1()
+            .min_h_0()
+            .items_stretch()
+            .gap(px(16.))
+            .when(self.settings.map_visible, |body| {
+                body.child(
+                    v_flex()
+                        .w(relative(0.40))
+                        .flex_shrink_0()
+                        .min_h_0()
+                        .gap(px(12.))
+                        .child(self.treemap(window, cx))
+                        .child(self.legend(cx)),
+                )
+            });
+        main.child(self.summary(window, cx)).child(body.child(list))
     }
 
     fn callout(text: String, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -543,7 +544,6 @@ impl Workbench {
             })
     }
 
-    #[expect(clippy::too_many_lines, reason = "one declarative view tree")]
     fn tile(&self, index: usize, block: &Block, parent: u64, cx: &mut Context<Self>) -> AnyElement {
         const GAP: f32 = treemap::TILE_GAP;
         let p = *theme::palette(cx);
@@ -583,7 +583,7 @@ impl Workbench {
             .rounded(px(8.))
             .bg(fill)
             .text_color(p.tile_ink)
-            .when(selected, |tile| tile.border_3().border_color(p.ink))
+            .when(selected, |tile| tile.border_1().border_color(p.ink))
             .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx));
         if let Some(id) = block.id {
             tile = tile
@@ -594,54 +594,6 @@ impl Workbench {
                 .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                     this.pick(id, event.click_count(), window, cx);
                 }));
-        }
-        for (offset, nested) in block.nested.iter().enumerate() {
-            let nested_selected = nested.id.is_some_and(|id| self.selection.is_selected(id));
-            let tip = format!("{}\n{}", nested.name, format::allocated(nested.size));
-            let label = format!(
-                "{}, {}, {} of the folder",
-                nested.name,
-                format::allocated(nested.size),
-                format::percent(ui::share(nested.size, parent))
-            );
-            let mut nested_tile = div()
-                .id(("nested", index * 64 + offset))
-                .role(Role::ListItem)
-                .aria_label(label)
-                .aria_selected(nested_selected)
-                .absolute()
-                .left(px(nested.x + 1.))
-                .top(px(nested.y + 1.))
-                .w(px((nested.width - 3.).max(1.)))
-                .h(px((nested.height - 3.).max(1.)))
-                .rounded(px(5.))
-                .bg(p.shade)
-                .hover(|style| style.bg(p.shade.opacity(0.9).blend(white().opacity(0.12))))
-                .when(nested_selected, |tile| tile.border_2().border_color(p.ink))
-                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx));
-            if let Some(id) = nested.id {
-                nested_tile = nested_tile.cursor_pointer().on_click(cx.listener(
-                    move |this, event: &ClickEvent, window, cx| {
-                        cx.stop_propagation();
-                        this.pick(id, event.click_count(), window, cx);
-                    },
-                ));
-            }
-            if nested.width - treemap::TILE_GAP >= treemap::NESTED_LABEL_WIDTH
-                && nested.height - treemap::TILE_GAP >= treemap::NESTED_LABEL_HEIGHT
-            {
-                nested_tile = nested_tile.child(
-                    div()
-                        .px(px(6.))
-                        .pt(px(3.))
-                        .truncate()
-                        .text_size(px(11.))
-                        .font_weight(FontWeight::MEDIUM)
-                        .opacity(0.8)
-                        .child(nested.name.clone()),
-                );
-            }
-            tile = tile.child(nested_tile);
         }
         if width >= treemap::LABEL_WIDTH && height >= treemap::LABEL_HEIGHT {
             tile = tile

@@ -925,6 +925,12 @@ impl Workbench {
         self.persist(cx);
         cx.notify();
     }
+
+    fn toggle_map(&mut self, cx: &mut Context<Self>) {
+        self.settings.map_visible = !self.settings.map_visible;
+        self.persist(cx);
+        cx.notify();
+    }
 }
 
 impl Render for Workbench {

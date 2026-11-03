@@ -31,7 +31,7 @@ Use the `.app`, not the raw `target/debug/cl-rs-gui` executable. In local valida
 - System/light/dark appearance, comfortable/compact density and persisted window bounds.
 - Scan Issues sheet and Full Disk Access guidance when macOS denies access.
 
-The optional **Show Treemap** pane draws the current folder's largest entries as a squarified treemap above the table; clicking a tile selects its row (Shift/Control extend the selection), double-clicking a folder opens it, and hovering shows the name and size. Only the largest 150 entries are drawn.
+The optional **Show map** pane draws the current folder's largest entries as a one-level squarified treemap beside the list; clicking a tile selects its row (Shift/Control extend the selection), double-clicking a folder drills into it, and hovering shows the name and size. Entries too small to label fold into one "smaller items" tile. Only the largest 80 entries are drawn, and the toolbar toggle (remembered across launches) hides the pane so the list can use the full width.
 
 **Search** (Cmd-F): live, case-insensitive name search of the current folder or the entire scan, run off the UI thread; results list paths relative to the scan root, largest first (500 shown). Esc or Close returns to the folder. **Back/Forward** (Cmd-[ / Cmd-]) walk folder history. Cmd-L lists the largest files. Packages (`.app`, `.framework`, …) show as "Package".
 

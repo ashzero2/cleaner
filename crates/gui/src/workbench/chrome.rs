@@ -45,6 +45,25 @@ impl Workbench {
                 "Show sidebar"
             })
             .on_click(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)));
+        let map = Button::new("map-toggle")
+            .icon(if self.settings.map_visible {
+                IconName::PanelRightClose
+            } else {
+                IconName::PanelRightOpen
+            })
+            .ghost()
+            .tooltip(if self.settings.map_visible {
+                "Hide map"
+            } else {
+                "Show map"
+            })
+            .accessibility_label(if self.settings.map_visible {
+                "Hide map"
+            } else {
+                "Show map"
+            })
+            .disabled(!has_scan)
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_map(cx)));
         let back = Button::new("back")
             .icon(IconName::ChevronLeft)
             .ghost()
@@ -121,6 +140,7 @@ impl Workbench {
                     .pr(px(14.))
                     .gap_2()
                     .child(sidebar)
+                    .child(map)
                     .child(back)
                     .child(forward)
                     .child(self.breadcrumb(cx))

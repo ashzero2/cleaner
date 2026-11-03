@@ -223,6 +223,29 @@ fn locked_folders_are_listed() {
 
 #[test]
 #[ignore = "needs a logged-in macOS session and Accessibility permission for the test runner"]
+fn map_can_be_hidden_and_shown() {
+    let fixture = tempfile::tempdir().expect("fixture");
+    let root = fixture.path().join("scan-root");
+    fs::create_dir_all(&root).expect("root folder");
+    fs::write(root.join("file.bin"), b"data").expect("fixture file");
+    let mut app = App::launch(&root, fixture.path());
+    app.drive("wait", "Full scan");
+    app.drive("wait", "Treemap of the open folder");
+    app.drive("press", "Hide map");
+    let hidden = app.drive("dump", "");
+    assert!(!hidden.contains("Treemap of the open folder"), "{hidden}");
+    app.drive("press", "Show map");
+    let shown = app.drive("dump", "");
+    assert!(shown.contains("Treemap of the open folder"), "{shown}");
+    app.drive("press", "Hide map");
+    app.quit();
+    let settings =
+        fs::read_to_string(fixture.path().join("config/settings.json")).expect("saved settings");
+    assert!(settings.contains("\"map_visible\": false"), "{settings}");
+}
+
+#[test]
+#[ignore = "needs a logged-in macOS session and Accessibility permission for the test runner"]
 fn sidebar_can_be_hidden_and_shown() {
     let fixture = tempfile::tempdir().expect("fixture");
     let root = fixture.path().join("scan-root");

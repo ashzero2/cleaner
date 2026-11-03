@@ -45,6 +45,10 @@ impl WindowBounds {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent persisted setting"
+)]
 pub(crate) struct Settings {
     pub(crate) appearance: Appearance,
     pub(crate) density: Density,
@@ -52,6 +56,7 @@ pub(crate) struct Settings {
     /// Cross-volume scans are never cached.
     pub(crate) cross_devices: bool,
     pub(crate) sidebar_visible: bool,
+    pub(crate) map_visible: bool,
     pub(crate) window: Option<WindowBounds>,
     /// Most recent first. Paths that are not valid UTF-8 are not persisted.
     #[serde(with = "utf8_paths")]
@@ -66,6 +71,7 @@ impl Default for Settings {
             cache_enabled: true,
             cross_devices: false,
             sidebar_visible: true,
+            map_visible: true,
             window: None,
             recent: Vec::new(),
         }
