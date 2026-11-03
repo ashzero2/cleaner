@@ -386,7 +386,7 @@ impl Workbench {
                             Button::new("settings")
                                 .icon(IconName::Settings)
                                 .ghost()
-                                .xsmall()
+                                .small()
                                 .tooltip("Settings (⌘,)")
                                 .accessibility_label("Settings")
                                 .on_click(cx.listener(|_, _, window, cx| {

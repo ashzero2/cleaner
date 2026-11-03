@@ -76,14 +76,31 @@ pub(crate) fn hint_label(hint: &Hint) -> String {
     }
 }
 
+/// The pill shown on a row for a rule matched inside it: which rule is here, not how safe
+/// it is. Deliberately neutral so cleanup risk stays worded on safety chips only.
+pub(crate) fn content_chip(text: impl Into<SharedString>, cx: &App) -> Div {
+    let p = theme::palette(cx);
+    h_flex()
+        .h(px(20.))
+        .min_w_0()
+        .px(px(7.))
+        .rounded_full()
+        .text_size(px(11.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(p.ink_2)
+        .border_1()
+        .border_color(p.line)
+        .whitespace_nowrap()
+        .child(div().min_w_0().truncate().child(text.into()))
+}
+
 /// A pill showing how safe a match is to clear; matches inside a folder are outlined.
 pub(crate) fn chip(hint: &Hint, cx: &App) -> Div {
-    let text = if hint.inside {
-        hint.name.clone()
+    if hint.inside {
+        content_chip(hint.name.clone(), cx)
     } else {
-        safety_text(hint.safety).to_owned()
-    };
-    safety_chip(hint.safety, text, !hint.inside, cx)
+        safety_chip(hint.safety, safety_text(hint.safety), true, cx)
+    }
 }
 
 pub(crate) fn safety_chip(
