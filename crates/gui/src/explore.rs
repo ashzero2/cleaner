@@ -31,10 +31,13 @@ const HINT_ROWS: usize = 200;
 pub(crate) struct Hooks {
     pub(crate) hover: Hover,
     pub(crate) toggle: Toggle,
+    /// A folder row was clicked: open it as the deepest column.
+    pub(crate) activate: Activate,
 }
 
 type Hover = Rc<dyn Fn(NodeId, bool, &mut App)>;
 type Toggle = Rc<dyn Fn(NodeId, &mut App)>;
+type Activate = Rc<dyn Fn(NodeId, &mut Window, &mut App)>;
 
 /// A rule match to show on a row: on the row itself, or somewhere inside it.
 #[derive(Clone, Debug)]
@@ -52,6 +55,8 @@ pub(crate) struct Directory {
     results: bool,
     pub(crate) staged: HashSet<NodeId>,
     pub(crate) hovered: Option<NodeId>,
+    /// The folder this column drilled into; highlighted as the active path item.
+    pub(crate) path_child: Option<NodeId>,
     categories: Vec<Category>,
     hints: Vec<Option<Hint>>,
     name_width: Pixels,
@@ -96,6 +101,7 @@ impl Directory {
             results,
             staged: HashSet::new(),
             hovered: None,
+            path_child: None,
             categories: Vec::new(),
             hints: Vec::new(),
             name_width: px(260.),
@@ -272,13 +278,17 @@ impl TableDelegate for Directory {
     ) -> Stateful<Div> {
         let id = self.row(row);
         let hover = Rc::clone(&self.hooks.hover);
+        let p = *theme::palette(cx);
+        let active = id.is_some() && id == self.path_child;
         let mut tr = div().id(("row", row)).on_hover(move |hovered, _, cx| {
             if let Some(id) = id {
                 hover(id, *hovered, cx);
             }
         });
-        if id.is_some() && id == self.hovered {
-            tr = tr.bg(theme::palette(cx).panel);
+        if active {
+            tr = tr.bg(p.accent_soft);
+        } else if id.is_some() && id == self.hovered {
+            tr = tr.bg(p.panel);
         }
         tr
     }
@@ -335,7 +345,7 @@ impl TableDelegate for Directory {
                     div().min_w_0().truncate().child(name)
                 };
                 let hint = self.hint(row);
-                h_flex()
+                let cell = h_flex()
                     .w_full()
                     .h_full()
                     .min_w_0()
@@ -366,8 +376,21 @@ impl TableDelegate for Directory {
                         } else {
                             chip.flex_shrink_0()
                         }
-                    }))
-                    .into_any_element()
+                    }));
+                if node.kind() == EntryKind::Dir {
+                    let activate = Rc::clone(&self.hooks.activate);
+                    cell.id(("open", row))
+                        .cursor_pointer()
+                        .on_click(move |event, window, cx| {
+                            let modifiers = event.modifiers();
+                            if !modifiers.shift && !modifiers.platform && !modifiers.control {
+                                activate(id, window, cx);
+                            }
+                        })
+                        .into_any_element()
+                } else {
+                    cell.into_any_element()
+                }
             }
             1 => {
                 if self.bar_width <= px(0.) {

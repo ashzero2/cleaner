@@ -192,7 +192,7 @@ impl Workbench {
                 .ghost()
                 .max_w(px(180.))
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    this.navigate(std::sync::Arc::clone(&target), id, true, window, cx);
+                    this.navigate(&target, id, true, window, cx);
                 }));
             if index == 0 && is_home(&path) {
                 button = button.icon(IconName::House);
@@ -241,7 +241,7 @@ impl Workbench {
                 cx.listener(|this, _, window, cx| {
                     if let (Some(cached), true) = (this.cached(cx), this.results.is_some()) {
                         let root = cached.tree.root();
-                        this.navigate(cached, root, true, window, cx);
+                        this.navigate(&cached, root, true, window, cx);
                     }
                 }),
                 cx,

@@ -16,7 +16,8 @@ use gpui_kit::component::{ActiveTheme as _, h_flex, v_flex};
 use gpui_kit::{
     App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Focusable as _,
     InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Pixels, Render,
-    Role, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, px, size,
+    Role, ScrollHandle, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window,
+    px, size,
 };
 
 use crate::actions::{
@@ -89,6 +90,14 @@ pub(crate) struct Workbench {
     root: Option<PathBuf>,
     running: Option<Running>,
     scanned: Option<Scanned>,
+    /// Browse columns: `columns[i]` lists the children of the folder at depth `i`;
+    /// the deepest column is the open folder. Results mode swaps the whole area for
+    /// `table` and keeps the columns untouched behind it.
+    columns: Vec<Entity<TableState<Directory>>>,
+    column_subscriptions: Vec<Subscription>,
+    columns_scroll: ScrollHandle,
+    /// The column count the horizontal scroll was last sent for.
+    scrolled_to: Cell<usize>,
     table: Option<Entity<TableState<Directory>>>,
     table_subscription: Option<Subscription>,
     selection: SelectionState,
@@ -193,6 +202,10 @@ impl Workbench {
             treemap_size: Rc::new(Cell::new(size(px(0.), px(0.)))),
             treemap_cache: RefCell::new(None),
             list_width: Rc::new(Cell::new(px(0.))),
+            columns: Vec::new(),
+            column_subscriptions: Vec::new(),
+            columns_scroll: ScrollHandle::new(),
+            scrolled_to: Cell::new(0),
             history: Vec::new(),
             history_pos: 0,
             search,
@@ -298,7 +311,9 @@ impl Workbench {
                     self.selection.staged.clear();
                     self.suggestions = Arc::new(Suggestions::default());
                     self.analyse(Arc::clone(&cached), cx);
-                    self.navigate(cached, directory, false, window, cx);
+                    self.navigate(&cached, directory, false, window, cx);
+                    #[cfg(feature = "ui-capture")]
+                    self.capture_open(&cached, window, cx);
                     self.persist(cx);
                 }
                 Event::Cancelled => {
@@ -330,16 +345,25 @@ impl Workbench {
     }
 
     fn cached(&self, cx: &App) -> Option<Arc<Cached>> {
-        Some(Arc::clone(&self.table.as_ref()?.read(cx).delegate().cached))
+        if let Some(table) = &self.table {
+            return Some(Arc::clone(&table.read(cx).delegate().cached));
+        }
+        Some(Arc::clone(
+            &self.columns.first()?.read(cx).delegate().cached,
+        ))
     }
 
+    /// The open folder: the deepest browse column, or the folder results came from.
     fn folder(&self, cx: &App) -> Option<NodeId> {
-        Some(self.table.as_ref()?.read(cx).delegate().id)
+        if let Some(table) = &self.table {
+            return Some(table.read(cx).delegate().id);
+        }
+        Some(self.columns.last()?.read(cx).delegate().id)
     }
 
     fn navigate(
         &mut self,
-        cached: Arc<Cached>,
+        cached: &Arc<Cached>,
         directory: NodeId,
         focus: bool,
         window: &mut Window,
@@ -368,13 +392,15 @@ impl Workbench {
             target.and_then(|position| Some((position, self.history.get(position)?)))
         {
             self.history_pos = position;
-            self.open_folder(cached, directory, true, window, cx);
+            self.open_folder(&cached, directory, true, window, cx);
         }
     }
 
+    /// Opens `directory` as the deepest column, rebuilding the chain from the scan root.
+    /// Columns whose folder is unchanged are kept with their scroll and selection state.
     fn open_folder(
         &mut self,
-        cached: Arc<Cached>,
+        cached: &Arc<Cached>,
         directory: NodeId,
         focus: bool,
         window: &mut Window,
@@ -384,13 +410,106 @@ impl Workbench {
         self.search
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.results = None;
-        let delegate = Directory::new(cached, directory, &self.suggestions, Self::hooks(cx));
-        self.install(delegate, focus, window, cx);
+        let tree = &cached.tree;
+        let mut chain = vec![directory];
+        let mut current = directory;
+        while let Some(parent) = tree.parent(current) {
+            chain.push(parent);
+            current = parent;
+        }
+        chain.reverse();
+        let replace_focused = self
+            .columns
+            .iter()
+            .any(|column| column.focus_handle(cx).contains_focused(window, cx))
+            || self
+                .table
+                .as_ref()
+                .is_some_and(|table| table.focus_handle(cx).contains_focused(window, cx));
+        let mut kept = 0;
+        while kept < self.columns.len()
+            && kept < chain.len()
+            && self.columns[kept].read(cx).delegate().id == chain[kept]
+        {
+            kept += 1;
+        }
+        self.columns.truncate(kept);
+        self.column_subscriptions.truncate(kept);
+        for &folder in &chain[kept..] {
+            let delegate = Directory::new(
+                Arc::clone(cached),
+                folder,
+                &self.suggestions,
+                Self::hooks(cx),
+            );
+            self.push_column(delegate, window, cx);
+        }
+        for (index, column) in self.columns.iter().enumerate() {
+            let active = chain.get(index + 1).copied();
+            column.update(cx, |table, cx| {
+                table.delegate_mut().path_child = active;
+                cx.notify();
+            });
+        }
+        let should_focus = focus || replace_focused || self.focus.is_focused(window);
+        if should_focus && let Some(column) = self.columns.last() {
+            window.focus(&column.focus_handle(cx), cx);
+        }
+        self.selection.clear();
+        self.hovered = None;
+        // The next fit_columns re-scrolls to the newest column once real widths exist.
+        self.scrolled_to.set(0);
+        cx.notify();
+    }
+
+    fn push_column(
+        &mut self,
+        mut delegate: Directory,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        delegate.staged.clone_from(&self.selection.staged);
+        let table = cx.new(|cx| {
+            TableState::new(delegate, window, cx)
+                .col_movable(false)
+                .col_resizable(false)
+                .sortable(false)
+                .row_header(false)
+        });
+        let subscription = cx.subscribe_in(&table, window, |this, table, event, window, cx| {
+            let directory = table.read(cx).delegate();
+            match event {
+                TableEvent::SelectRow(row) => {
+                    if let Some(id) = directory.row(*row) {
+                        let modifiers = window.modifiers();
+                        if modifiers.shift {
+                            this.selection.select_range(id, directory);
+                        } else if modifiers.platform || modifiers.control {
+                            this.selection.toggle(id);
+                        } else {
+                            this.selection.select_single(id);
+                        }
+                    }
+                }
+                TableEvent::DoubleClickedRow(row) => {
+                    if let Some(id) = table.read(cx).delegate().row(*row) {
+                        this.selection.select_single(id);
+                        this.open_selected(window, cx);
+                    }
+                }
+                TableEvent::ClearSelection => this.selection.clear(),
+                _ => {}
+            }
+            cx.notify();
+        });
+        self.columns.push(table);
+        self.column_subscriptions.push(subscription);
     }
 
     fn hooks(cx: &Context<Self>) -> Hooks {
         let hover = cx.weak_entity();
         let toggle = cx.weak_entity();
+        let activate = cx.weak_entity();
         Hooks {
             hover: Rc::new(move |id, hovered, cx| {
                 let _ = hover.update(cx, |this, cx| this.hover(id, hovered, cx));
@@ -398,9 +517,54 @@ impl Workbench {
             toggle: Rc::new(move |id, cx| {
                 let _ = toggle.update(cx, |this, cx| this.toggle_staged(id, cx));
             }),
+            activate: Rc::new(move |folder, window, cx| {
+                let _ = activate.update(cx, |this, cx| this.activate_folder(folder, window, cx));
+            }),
         }
     }
 
+    /// A folder row was clicked: drill into it as the deepest column.
+    fn activate_folder(&mut self, folder: NodeId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(cached) = self.cached(cx) else {
+            return;
+        };
+        if cached.tree.node(folder).kind() != EntryKind::Dir {
+            return;
+        }
+        self.navigate(&cached, folder, false, window, cx);
+    }
+
+    /// Capture builds only: opens `CLRS_GUI_CAPTURE_OPEN` (a path inside the scan root)
+    /// after a scan so a frame can show drilled-in columns without an input event.
+    #[cfg(feature = "ui-capture")]
+    fn capture_open(&mut self, cached: &Arc<Cached>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(open) = std::env::var_os("CLRS_GUI_CAPTURE_OPEN") else {
+            return;
+        };
+        let Ok(open) = std::path::absolute(&open) else {
+            return;
+        };
+        let Ok(rest) = open.strip_prefix(cached.tree.root_path()) else {
+            eprintln!("CLRS_GUI_CAPTURE_OPEN must be inside the scan root");
+            return;
+        };
+        let mut current = cached.tree.root();
+        for component in rest.components() {
+            let Some(next) = cached
+                .tree
+                .children(current)
+                .find(|child| cached.tree.name(*child) == component.as_os_str())
+            else {
+                eprintln!("CLRS_GUI_CAPTURE_OPEN names a path the tree does not contain");
+                return;
+            };
+            current = next;
+        }
+        self.navigate(cached, current, false, window, cx);
+    }
+
+    /// Installs the results table that replaces the columns while search, largest files
+    /// or suggestions are shown.
     fn install(
         &mut self,
         mut delegate: Directory,
@@ -459,11 +623,32 @@ impl Workbench {
         cx.notify();
     }
 
-    /// Re-fits the list's name column after the window or split changed width.
-    fn fit_list(&self, cx: &mut Context<Self>) {
-        let width = self.list_width.get();
-        if let Some(table) = &self.table {
-            table.update(cx, |table, cx| {
+    /// Re-fits every column's name width after the window or split changed width.
+    fn fit_columns(&self, cx: &mut Context<Self>) {
+        if self.table.is_some() {
+            if let Some(table) = &self.table {
+                table.update(cx, |table, cx| {
+                    if table.delegate_mut().fit(self.list_width.get()) {
+                        table.refresh(cx);
+                        cx.notify();
+                    }
+                });
+            }
+            return;
+        }
+        let width = self.column_width();
+        let count = self.columns.len();
+        if count > 0
+            && self.list_width.get() > px(0.)
+            && self.scrolled_to.get() != count
+            && width <= px(explorer::COLUMN_MIN_WIDTH)
+        {
+            // The columns overflow: keep the newest one in view, once per new column.
+            self.columns_scroll.scroll_to_item(count - 1);
+            self.scrolled_to.set(count);
+        }
+        for column in &self.columns {
+            column.update(cx, |table, cx| {
                 if table.delegate_mut().fit(width) {
                     table.refresh(cx);
                     cx.notify();
@@ -477,7 +662,8 @@ impl Workbench {
             return;
         }
         self.hovered = id;
-        if let Some(table) = &self.table {
+        let tables = self.columns.iter().chain(self.table.iter());
+        for table in tables {
             table.update(cx, |table, cx| {
                 table.delegate_mut().hovered = id;
                 cx.notify();
@@ -504,9 +690,7 @@ impl Workbench {
                 .as_ref()
                 .is_some_and(|results| results.kind == ResultsKind::Search)
             {
-                self.results = None;
-                let delegate = Directory::new(cached, folder, &self.suggestions, Self::hooks(cx));
-                self.install(delegate, false, window, cx);
+                self.open_folder(&cached, folder, false, window, cx);
             }
             return;
         }
@@ -583,8 +767,7 @@ impl Workbench {
         if self.results.take().is_some()
             && let (Some(cached), Some(folder)) = (self.cached(cx), self.folder(cx))
         {
-            let delegate = Directory::new(cached, folder, &self.suggestions, Self::hooks(cx));
-            self.install(delegate, true, window, cx);
+            self.open_folder(&cached, folder, true, window, cx);
         }
     }
 
@@ -672,10 +855,10 @@ impl Workbench {
     }
 
     fn sync_staged(&mut self, cx: &mut Context<Self>) {
-        if let Some(table) = &self.table {
-            let staged = self.selection.staged.clone();
+        let staged = self.selection.staged.clone();
+        for table in self.columns.iter().chain(self.table.iter()) {
             table.update(cx, |table, cx| {
-                table.delegate_mut().staged = staged;
+                table.delegate_mut().staged.clone_from(&staged);
                 cx.notify();
             });
         }
@@ -846,32 +1029,54 @@ impl Workbench {
         if let (Some(cached), Some(&id)) = (self.cached(cx), self.selection.selected.last())
             && cached.tree.node(id).kind() == EntryKind::Dir
         {
-            self.navigate(cached, id, true, window, cx);
+            self.navigate(&cached, id, true, window, cx);
         }
     }
 
-    /// Selects `id` from the treemap; it may be a row of the list or one level deeper.
+    /// Selects `id` from the treemap; it may be a row of any column or one level deeper.
     fn pick(&mut self, id: NodeId, clicks: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(table) = self.table.clone() else {
-            return;
-        };
-        let row = table
-            .read(cx)
-            .delegate()
-            .rows
-            .iter()
-            .position(|&row| row == id);
         if clicks >= 2 {
             self.selection.select_single(id);
             self.open_selected(window, cx);
             return;
         }
-        if let Some(row) = row {
-            table.update(cx, |table, cx| table.set_selected_row(row, cx));
-        } else {
-            table.update(cx, TableState::clear_selection);
-            self.selection.select_single(id);
+        if self.cached(cx).is_none() {
+            return;
         }
+        if let Some(table) = self.table.clone() {
+            if table.read(cx).delegate().rows.contains(&id) {
+                let row = table
+                    .read(cx)
+                    .delegate()
+                    .rows
+                    .iter()
+                    .position(|&row| row == id);
+                if let Some(row) = row {
+                    table.update(cx, |table, cx| table.set_selected_row(row, cx));
+                }
+            } else {
+                table.update(cx, TableState::clear_selection);
+            }
+            self.selection.select_single(id);
+            cx.notify();
+            return;
+        }
+        // The node can only be a row of the column listing its parent; clear any other
+        // column's highlight. Nodes under a folder that isn't an open column still show
+        // in the detail card.
+        for column in &self.columns {
+            let row = column
+                .read(cx)
+                .delegate()
+                .rows
+                .iter()
+                .position(|&row| row == id);
+            match row {
+                Some(row) => column.update(cx, |table, cx| table.set_selected_row(row, cx)),
+                None => column.update(cx, TableState::clear_selection),
+            }
+        }
+        self.selection.select_single(id);
         cx.notify();
     }
 
@@ -879,7 +1084,7 @@ impl Workbench {
         if let (Some(cached), Some(folder)) = (self.cached(cx), self.folder(cx))
             && let Some(parent) = cached.tree.parent(folder)
         {
-            self.navigate(cached, parent, true, window, cx);
+            self.navigate(&cached, parent, true, window, cx);
         }
     }
 
@@ -967,14 +1172,14 @@ impl Workbench {
 
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.fit_list(cx);
+        self.fit_columns(cx);
         let p = *theme::palette(cx);
         let mut body = h_flex().flex_1().min_h_0().items_stretch();
         if self.settings.sidebar_visible {
             body = body.child(self.sidebar(window, cx));
         }
         body = body.child(self.main(window, cx));
-        if self.table.is_none() {
+        if self.columns.is_empty() && self.table.is_none() {
             body = body.bg(p.window);
         }
         v_flex()
@@ -1036,6 +1241,6 @@ impl Render for Workbench {
             .on_action(cx.listener(|_, _: &ReviewChanges, window, cx| panels::review(window, cx)))
             .child(self.toolbar(window, cx))
             .child(body)
-            .children(self.table.is_some().then(|| self.tray(cx)))
+            .children((!self.columns.is_empty() || self.table.is_some()).then(|| self.tray(cx)))
     }
 }

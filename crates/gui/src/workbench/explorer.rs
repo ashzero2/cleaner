@@ -11,8 +11,8 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Selectable as _, Sizable as _, Size, h_flex, v_flex};
 use gpui_kit::{
     AnyElement, ClickEvent, Context, Div, FontWeight, InteractiveElement as _, IntoElement,
-    KeyDownEvent, ParentElement as _, Role, StatefulInteractiveElement as _, Styled as _, Window,
-    canvas, div, prelude::FluentBuilder as _, px, relative, white,
+    KeyDownEvent, ParentElement as _, Pixels, Role, StatefulInteractiveElement as _, Styled as _,
+    Window, canvas, div, prelude::FluentBuilder as _, px, relative, white,
 };
 
 use super::{ResultsKind, SearchScope, Workbench};
@@ -29,6 +29,10 @@ pub(super) struct TreemapCache {
     suggestions: usize,
     blocks: Rc<Vec<Block>>,
 }
+
+/// Width bounds for one browse column.
+pub(super) const COLUMN_MIN_WIDTH: f32 = 300.;
+pub(super) const COLUMN_MAX_WIDTH: f32 = 480.;
 
 #[expect(clippy::cast_possible_truncation, reason = "pixel sizes")]
 fn key(value: f32) -> i32 {
@@ -55,7 +59,7 @@ impl Workbench {
         if let Some(warning) = &self.warning {
             main = main.child(Self::callout(warning.clone(), cx));
         }
-        if self.table.is_none() {
+        if self.columns.is_empty() && self.table.is_none() {
             return main.child(if self.running.is_some() {
                 self.scanning(cx).into_any_element()
             } else {
@@ -945,55 +949,106 @@ impl Workbench {
 
     fn list(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let p = *theme::palette(cx);
-        let Some(table) = &self.table else {
-            return div().into_any_element();
-        };
         let measure = Rc::clone(&self.list_width);
         let view = cx.weak_entity();
-        let mut card = ui::card(cx)
+        let measurer = canvas(
+            move |bounds, _, cx| {
+                if measure.get() != bounds.size.width {
+                    measure.set(bounds.size.width);
+                    let view = view.clone();
+                    cx.defer(move |cx| {
+                        let _ = view.update(cx, |_, cx| cx.notify());
+                    });
+                }
+            },
+            |_, (), _, _| {},
+        )
+        .absolute()
+        .size_full();
+        if let Some(table) = &self.table {
+            let mut card = ui::card(cx)
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .overflow_hidden();
+            if let Some(results) = &self.results {
+                card = card.child(self.results_header(results, cx));
+            }
+            return card
+                .child(
+                    div().relative().flex_1().min_h_0().child(measurer).child(
+                        DataTable::new(table)
+                            .bordered(false)
+                            .stripe(false)
+                            .header_row_height(px(34.))
+                            .with_size(Size::Size(match self.settings.density {
+                                Density::Comfortable => px(42.),
+                                Density::Compact => px(38.),
+                            })),
+                    ),
+                )
+                .text_color(p.ink)
+                .into_any_element();
+        }
+        let width = self.column_width();
+        let density = match self.settings.density {
+            Density::Comfortable => px(42.),
+            Density::Compact => px(38.),
+        };
+        let count = self.columns.len();
+        let mut columns = h_flex()
+            .id("columns")
+            .h_full()
+            .flex_1()
+            .min_h_0()
+            .overflow_x_scroll()
+            .track_scroll(&self.columns_scroll)
+            .items_stretch();
+        for (index, table) in self.columns.iter().enumerate() {
+            columns = columns.child(
+                div()
+                    .w(width)
+                    .min_h_0()
+                    .flex_shrink_0()
+                    .when(index + 1 < count, |column| {
+                        column.border_r_1().border_color(p.line)
+                    })
+                    .child(
+                        DataTable::new(table)
+                            .bordered(false)
+                            .stripe(false)
+                            .header_row_height(px(34.))
+                            .with_size(Size::Size(density)),
+                    ),
+            );
+        }
+        ui::card(cx)
             .flex_1()
             .min_w_0()
             .min_h_0()
             .flex()
             .flex_col()
-            .overflow_hidden();
-        if let Some(results) = &self.results {
-            card = card.child(self.results_header(results, cx));
-        }
-        card.child(
-            div()
-                .relative()
-                .flex_1()
-                .min_h_0()
-                .child(
-                    canvas(
-                        move |bounds, _, cx| {
-                            if measure.get() != bounds.size.width {
-                                measure.set(bounds.size.width);
-                                let view = view.clone();
-                                cx.defer(move |cx| {
-                                    let _ = view.update(cx, |_, cx| cx.notify());
-                                });
-                            }
-                        },
-                        |_, (), _, _| {},
-                    )
-                    .absolute()
-                    .size_full(),
-                )
-                .child(
-                    DataTable::new(table)
-                        .bordered(false)
-                        .stripe(false)
-                        .header_row_height(px(34.))
-                        .with_size(Size::Size(match self.settings.density {
-                            Density::Comfortable => px(42.),
-                            Density::Compact => px(38.),
-                        })),
-                ),
-        )
-        .text_color(p.ink)
-        .into_any_element()
+            .overflow_hidden()
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .child(measurer)
+                    .child(columns),
+            )
+            .text_color(p.ink)
+            .into_any_element()
+    }
+
+    /// Equal share of the list area for each open column, clamped to a readable range.
+    /// Past the minimum the card scrolls horizontally.
+    #[expect(clippy::cast_precision_loss, reason = "column count is small")]
+    pub(super) fn column_width(&self) -> Pixels {
+        let count = self.columns.len().max(1);
+        (self.list_width.get() / count as f32).clamp(px(COLUMN_MIN_WIDTH), px(COLUMN_MAX_WIDTH))
     }
 
     #[expect(clippy::too_many_lines, reason = "one declarative header")]
