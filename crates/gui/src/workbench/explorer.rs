@@ -1023,8 +1023,8 @@ impl Workbench {
                         .stripe(false)
                         .header_row_height(px(34.))
                         .with_size(Size::Size(match self.settings.density {
-                            Density::Comfortable => px(38.),
-                            Density::Compact => px(30.),
+                            Density::Comfortable => px(42.),
+                            Density::Compact => px(38.),
                         })),
                 ),
         )

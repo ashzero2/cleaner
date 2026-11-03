@@ -19,6 +19,8 @@ use crate::recommendations::Suggestions;
 use crate::{format, theme, ui};
 
 const BAR_WIDTH: f32 = 120.;
+/// Below this computed name width the size bar column is dropped entirely.
+const MIN_NAME_WIDTH: f32 = 260.;
 const SIZE_WIDTH: f32 = 92.;
 const ADD_WIDTH: f32 = 46.;
 /// Most rows whose descendants are searched for a rule match to hint at.
@@ -53,6 +55,7 @@ pub(crate) struct Directory {
     categories: Vec<Category>,
     hints: Vec<Option<Hint>>,
     name_width: Pixels,
+    bar_width: Pixels,
     hooks: Hooks,
 }
 
@@ -96,6 +99,7 @@ impl Directory {
             categories: Vec::new(),
             hints: Vec::new(),
             name_width: px(260.),
+            bar_width: px(BAR_WIDTH),
             hooks,
         };
         directory.classify(suggestions);
@@ -149,11 +153,18 @@ impl Directory {
         self.hints.get(index).and_then(Option::as_ref)
     }
 
-    /// Fits the name column to `width`, the space the table has. Returns whether it changed.
+    /// Fits the name column to `width`, the space the table has, dropping the size bar
+    /// column when the name would get too narrow. Returns whether it changed.
     pub(crate) fn fit(&mut self, width: Pixels) -> bool {
-        let name = (width - px(BAR_WIDTH + SIZE_WIDTH + ADD_WIDTH + 2.)).max(px(160.));
-        let changed = (name - self.name_width).abs() >= px(1.);
+        let bar = if width - px(BAR_WIDTH + SIZE_WIDTH + ADD_WIDTH + 2.) < px(MIN_NAME_WIDTH) {
+            0.
+        } else {
+            BAR_WIDTH
+        };
+        let name = (width - px(bar + SIZE_WIDTH + ADD_WIDTH + 2.)).max(px(160.));
+        let changed = (name - self.name_width).abs() >= px(1.) || self.bar_width != px(bar);
         self.name_width = name;
+        self.bar_width = px(bar);
         changed
     }
 
@@ -222,7 +233,9 @@ impl TableDelegate for Directory {
             0 => Column::new("name", "Name")
                 .width(self.name_width)
                 .resizable(false),
-            1 => Column::new("bar", "").width(px(BAR_WIDTH)).resizable(false),
+            1 => Column::new("bar", "")
+                .width(self.bar_width)
+                .resizable(false),
             2 => Column::new("size", "Size")
                 .width(px(SIZE_WIDTH))
                 .text_right()
@@ -297,68 +310,84 @@ impl TableDelegate for Directory {
                     let (parent, leaf) = name
                         .rsplit_once('/')
                         .map_or((None, name.as_str()), |(parent, leaf)| (Some(parent), leaf));
-                    h_flex()
+                    v_flex()
                         .min_w_0()
-                        .overflow_hidden()
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .line_height(px(17.))
+                                .child(leaf.to_owned()),
+                        )
                         .children(parent.map(|parent| {
                             div()
                                 .min_w_0()
                                 .whitespace_nowrap()
                                 .overflow_hidden()
                                 .text_ellipsis_start()
+                                .line_height(px(13.))
+                                .text_size(px(11.))
                                 .text_color(p.ink_2)
                                 .font_weight(FontWeight::NORMAL)
                                 .child(format!("{parent}/"))
                         }))
-                        .child(div().flex_shrink_0().child(leaf.to_owned()))
                 } else {
-                    h_flex()
-                        .min_w_0()
-                        .child(div().min_w_0().truncate().child(name))
+                    div().min_w_0().truncate().child(name)
                 };
                 let hint = self.hint(row);
                 h_flex()
                     .w_full()
+                    .h_full()
                     .min_w_0()
                     .gap_2()
-                    .child(ui::swatch(color, px(10.)))
-                    .child(Icon::new(icon).small().text_color(p.ink_2))
+                    .child(Icon::new(icon).small().text_color(color))
                     .child(
                         div()
                             .min_w_0()
                             .font_weight(FontWeight::MEDIUM)
-                            .map(|name| {
-                                if hint.is_some() {
+                            .map(|name| match hint {
+                                Some(hint) if hint.inside => {
                                     name.flex_shrink_0().max_w(relative(0.62))
-                                } else {
-                                    name.flex_1()
                                 }
+                                _ => name.flex_1(),
                             })
                             .child(label),
                     )
                     .children(hint.map(|hint| {
                         let label = ui::hint_label(hint);
-                        ui::chip(hint, cx)
-                            .id(("hint", row))
-                            .tooltip(move |window, cx| {
-                                Tooltip::new(label.clone()).build(window, cx)
-                            })
-                            .flex_shrink(1.)
-                            .min_w_0()
-                            .overflow_hidden()
+                        let chip =
+                            ui::chip(hint, cx)
+                                .id(("hint", row))
+                                .tooltip(move |window, cx| {
+                                    Tooltip::new(label.clone()).build(window, cx)
+                                });
+                        if hint.inside {
+                            chip.flex_shrink(1.).min_w_0().overflow_hidden()
+                        } else {
+                            chip.flex_shrink_0()
+                        }
                     }))
                     .into_any_element()
             }
             1 => {
+                if self.bar_width <= px(0.) {
+                    return div().into_any_element();
+                }
                 let largest = self
                     .rows
                     .first()
                     .map_or(1, |&first| tree.node(first).size().max(1));
-                ui::bar(ui::portion(node.size(), largest), color, p.line).into_any_element()
+                h_flex()
+                    .w_full()
+                    .h_full()
+                    .child(ui::bar(ui::portion(node.size(), largest), color, p.line))
+                    .into_any_element()
             }
             2 => v_flex()
                 .w_full()
+                .h_full()
                 .items_end()
+                .justify_center()
                 .gap_0()
                 .line_height(px(14.))
                 .font_features(theme::tabular())
@@ -398,6 +427,7 @@ impl TableDelegate for Directory {
                     .on_click(move |_, _, cx| toggle(id, cx));
                 h_flex()
                     .w_full()
+                    .h_full()
                     .justify_center()
                     .child(if staged {
                         button.primary()
