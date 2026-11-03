@@ -226,6 +226,28 @@ fn locked_folders_are_listed() {
 
 #[test]
 #[ignore = "needs a logged-in macOS session and Accessibility permission for the test runner"]
+fn hidden_items_can_be_expanded() {
+    let fixture = tempfile::tempdir().expect("fixture");
+    let root = fixture.path().join("scan-root");
+    let hidden = root.join(".big-cache");
+    fs::create_dir_all(&hidden).expect("hidden folder");
+    fs::write(hidden.join("blob.bin"), vec![7; 2_000_000]).expect("hidden file");
+    fs::write(root.join("notes.txt"), b"keep").expect("visible file");
+    let mut app = App::launch(&root, fixture.path());
+    app.drive("wait", "Full scan");
+    app.drive("wait", "Hidden items");
+    app.drive("press", "Show hidden items");
+    app.drive("wait", ".big-cache");
+    app.drive("wait", "2.0 MB");
+    app.quit();
+    assert!(
+        hidden.join("blob.bin").exists(),
+        "the e2e must never remove files"
+    );
+}
+
+#[test]
+#[ignore = "needs a logged-in macOS session and Accessibility permission for the test runner"]
 fn map_can_be_hidden_and_shown() {
     let fixture = tempfile::tempdir().expect("fixture");
     let root = fixture.path().join("scan-root");

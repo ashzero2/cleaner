@@ -26,7 +26,7 @@ use crate::actions::{
     ShowIssues, ShowSuggestions, StageSelection, StopScan, ToggleSelectionMode, ToggleSidebar,
     TrashSelection, UnstageSelection,
 };
-use crate::explore::{Directory, Hooks};
+use crate::explore::{Directory, Hooks, Lens};
 use crate::jobs::{Event, Jobs, ScanRequest};
 use crate::recommendations::Suggestions;
 use crate::selection::SelectionState;
@@ -510,6 +510,7 @@ impl Workbench {
         let hover = cx.weak_entity();
         let toggle = cx.weak_entity();
         let activate = cx.weak_entity();
+        let expand = cx.weak_entity();
         Hooks {
             hover: Rc::new(move |id, hovered, cx| {
                 let _ = hover.update(cx, |this, cx| this.hover(id, hovered, cx));
@@ -519,6 +520,9 @@ impl Workbench {
             }),
             activate: Rc::new(move |folder, window, cx| {
                 let _ = activate.update(cx, |this, cx| this.activate_folder(folder, window, cx));
+            }),
+            expand: Rc::new(move |folder, lens, window, cx| {
+                let _ = expand.update(cx, |this, cx| this.expand_tail(folder, lens, window, cx));
             }),
         }
     }
@@ -532,6 +536,64 @@ impl Workbench {
             return;
         }
         self.navigate(&cached, folder, false, window, cx);
+    }
+
+    /// A tail row was clicked: open that slice of `folder` in the next column, replacing
+    /// anything deeper, or close it when it is already the one showing.
+    fn expand_tail(
+        &mut self,
+        folder: NodeId,
+        lens: Lens,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(cached) = self.cached(cx) else {
+            return;
+        };
+        let Some(index) = self.columns.iter().position(|column| {
+            let delegate = column.read(cx).delegate();
+            delegate.id == folder && delegate.lens == Lens::All
+        }) else {
+            return;
+        };
+        if self.columns.len() == index + 2 {
+            let delegate = self.columns[index + 1].read(cx).delegate();
+            if delegate.id == folder && delegate.lens == lens {
+                self.columns.pop();
+                self.column_subscriptions.pop();
+                self.scrolled_to.set(0);
+                self.selection.clear();
+                self.hovered = None;
+                cx.notify();
+                return;
+            }
+        }
+        self.columns.truncate(index + 1);
+        self.column_subscriptions.truncate(index + 1);
+        self.columns[index].update(cx, |table, cx| {
+            table.delegate_mut().path_child = None;
+            cx.notify();
+        });
+        let delegate = Directory::with_lens(
+            Arc::clone(&cached),
+            folder,
+            lens,
+            &self.suggestions,
+            Self::hooks(cx),
+        );
+        self.push_column(delegate, window, cx);
+        self.scrolled_to.set(0);
+        self.selection.clear();
+        self.hovered = None;
+        let replace_focused = self
+            .columns
+            .iter()
+            .any(|column| column.focus_handle(cx).contains_focused(window, cx));
+        let should_focus = replace_focused || self.focus.is_focused(window);
+        if should_focus && let Some(column) = self.columns.last() {
+            window.focus(&column.focus_handle(cx), cx);
+        }
+        cx.notify();
     }
 
     /// Capture builds only: opens `CLRS_GUI_CAPTURE_OPEN` (a path inside the scan root)

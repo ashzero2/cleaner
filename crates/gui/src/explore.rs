@@ -3,15 +3,16 @@ use std::fmt::Write as _;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use clrs_core::{Cached, EntryKind, NodeId, Safety};
+use clrs_core::{Cached, EntryKind, NodeId, Safety, Tree};
+use gpui_kit::assets::IconName as AssetIconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::table::{Column, TableDelegate, TableState};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::{
     App, Context, Div, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
-    Pixels, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Window, div,
-    prelude::FluentBuilder as _, px, relative,
+    Pixels, Role, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Window,
+    div, prelude::FluentBuilder as _, px, relative,
 };
 
 use crate::category::{self, Category};
@@ -26,6 +27,38 @@ const ADD_WIDTH: f32 = 46.;
 /// Most rows whose descendants are searched for a rule match to hint at.
 const HINT_ROWS: usize = 200;
 
+/// Which slice of a folder's children a column lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Lens {
+    /// Every child that isn't folded into a tail row.
+    All,
+    /// Only the dot-prefixed children.
+    Hidden,
+    /// Only the small, non-hidden children.
+    Small,
+}
+
+/// A collapsed row at the end of a column: entries too small or too hidden to list.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Tail {
+    pub(crate) lens: Lens,
+    pub(crate) count: usize,
+    pub(crate) size: u64,
+}
+
+impl Tail {
+    fn label(&self) -> &'static str {
+        match self.lens {
+            Lens::Small => "Small items",
+            Lens::Hidden => "Hidden items",
+            Lens::All => "",
+        }
+    }
+}
+
+/// Children at or above this size are listed directly; the rest fold into "Small items".
+const SMALL_ITEM: u64 = 512 * 1024;
+
 /// Callbacks from rows back to the workbench.
 #[derive(Clone)]
 pub(crate) struct Hooks {
@@ -33,11 +66,14 @@ pub(crate) struct Hooks {
     pub(crate) toggle: Toggle,
     /// A folder row was clicked: open it as the deepest column.
     pub(crate) activate: Activate,
+    /// A tail row was clicked: open its slice in the next column.
+    pub(crate) expand: Expand,
 }
 
 type Hover = Rc<dyn Fn(NodeId, bool, &mut App)>;
 type Toggle = Rc<dyn Fn(NodeId, &mut App)>;
 type Activate = Rc<dyn Fn(NodeId, &mut Window, &mut App)>;
+type Expand = Rc<dyn Fn(NodeId, Lens, &mut Window, &mut App)>;
 
 /// A rule match to show on a row: on the row itself, or somewhere inside it.
 #[derive(Clone, Debug)]
@@ -50,7 +86,11 @@ pub(crate) struct Hint {
 pub(crate) struct Directory {
     pub(crate) cached: Arc<Cached>,
     pub(crate) id: NodeId,
+    /// Which slice of `id`'s children this column lists.
+    pub(crate) lens: Lens,
     pub(crate) rows: Vec<NodeId>,
+    /// Collapsed tail rows after `rows`.
+    tails: Vec<Tail>,
     /// Rows are search or recommendation results, shown with paths relative to the scan root.
     results: bool,
     pub(crate) staged: HashSet<NodeId>,
@@ -71,8 +111,18 @@ impl Directory {
         suggestions: &Suggestions,
         hooks: Hooks,
     ) -> Self {
-        let rows = cached.tree.children(id).collect();
-        Self::build(cached, id, rows, false, suggestions, hooks)
+        Self::build(cached, id, Lens::All, suggestions, hooks)
+    }
+
+    /// A column listing one collapsed slice of `id`'s children.
+    pub(crate) fn with_lens(
+        cached: Arc<Cached>,
+        id: NodeId,
+        lens: Lens,
+        suggestions: &Suggestions,
+        hooks: Hooks,
+    ) -> Self {
+        Self::build(cached, id, lens, suggestions, hooks)
     }
 
     /// A table of `rows` from anywhere in the scan, with `id` as the folder to return to.
@@ -83,22 +133,58 @@ impl Directory {
         suggestions: &Suggestions,
         hooks: Hooks,
     ) -> Self {
-        Self::build(cached, id, rows, true, suggestions, hooks)
+        let mut directory = Self {
+            cached,
+            id,
+            lens: Lens::All,
+            rows,
+            tails: Vec::new(),
+            results: true,
+            staged: HashSet::new(),
+            hovered: None,
+            path_child: None,
+            categories: Vec::new(),
+            hints: Vec::new(),
+            name_width: px(260.),
+            bar_width: px(BAR_WIDTH),
+            hooks,
+        };
+        directory.classify(suggestions);
+        directory
     }
 
     fn build(
         cached: Arc<Cached>,
         id: NodeId,
-        rows: Vec<NodeId>,
-        results: bool,
+        lens: Lens,
         suggestions: &Suggestions,
         hooks: Hooks,
     ) -> Self {
+        let tree = &cached.tree;
+        let (rows, tails) = match lens {
+            Lens::All => browse_rows(tree, id),
+            Lens::Hidden => (
+                tree.children(id)
+                    .filter(|&child| is_hidden(tree, child))
+                    .collect(),
+                Vec::new(),
+            ),
+            Lens::Small => (
+                tree.children(id)
+                    .filter(|&child| {
+                        !is_hidden(tree, child) && tree.node(child).size() < SMALL_ITEM
+                    })
+                    .collect(),
+                Vec::new(),
+            ),
+        };
         let mut directory = Self {
             cached,
             id,
+            lens,
             rows,
-            results,
+            tails,
+            results: false,
             staged: HashSet::new(),
             hovered: None,
             path_child: None,
@@ -148,6 +234,11 @@ impl Directory {
         self.rows.get(index).copied()
     }
 
+    /// The collapsed row at `index`, when it isn't a regular entry.
+    fn tail(&self, index: usize) -> Option<&Tail> {
+        self.tails.get(index.checked_sub(self.rows.len())?)
+    }
+
     pub(crate) fn category(&self, index: usize) -> Category {
         self.categories
             .get(index)
@@ -194,6 +285,13 @@ impl Directory {
     }
 
     fn text(&self, row: usize, column: usize) -> String {
+        if let Some(tail) = self.tail(row) {
+            return match column {
+                0 => format!("{}, {}", tail.label(), format::plural(tail.count, "item")),
+                2 => format::allocated(tail.size),
+                _ => String::new(),
+            };
+        }
         let Some(id) = self.row(row) else {
             return String::new();
         };
@@ -225,13 +323,62 @@ impl Directory {
     }
 }
 
+/// Dot-prefixed names: macOS convention for hidden entries.
+fn is_hidden(tree: &Tree, id: NodeId) -> bool {
+    tree.name(id).as_encoded_bytes().first() == Some(&b'.')
+}
+
+/// Children of `id` listed directly, plus the collapsed tail rows after them. Dot-prefixed
+/// children fold into "Hidden items" when together they carry real bytes; children below
+/// [`SMALL_ITEM`] fold into "Small items" for the same reason.
+fn browse_rows(tree: &Tree, id: NodeId) -> (Vec<NodeId>, Vec<Tail>) {
+    let children: Vec<NodeId> = tree.children(id).collect();
+    let hidden: Vec<u64> = children
+        .iter()
+        .filter(|&&child| is_hidden(tree, child))
+        .map(|&child| tree.node(child).size())
+        .collect();
+    let hidden_total: u64 = hidden.iter().sum();
+    let collapse_hidden = hidden_total >= SMALL_ITEM;
+    let mut rows: Vec<NodeId> = children
+        .iter()
+        .copied()
+        .filter(|&child| !(collapse_hidden && is_hidden(tree, child)))
+        .collect();
+    let small: Vec<u64> = rows
+        .iter()
+        .copied()
+        .filter(|&child| tree.node(child).size() < SMALL_ITEM)
+        .map(|child| tree.node(child).size())
+        .collect();
+    let small_total: u64 = small.iter().sum();
+    let mut tails = Vec::new();
+    if small_total >= SMALL_ITEM {
+        let count = small.len();
+        tails.push(Tail {
+            lens: Lens::Small,
+            count,
+            size: small_total,
+        });
+        rows.retain(|&child| tree.node(child).size() >= SMALL_ITEM);
+    }
+    if collapse_hidden {
+        tails.push(Tail {
+            lens: Lens::Hidden,
+            count: hidden.len(),
+            size: hidden_total,
+        });
+    }
+    (rows, tails)
+}
+
 impl TableDelegate for Directory {
     fn columns_count(&self, _: &App) -> usize {
         4
     }
 
     fn rows_count(&self, _: &App) -> usize {
-        self.rows.len()
+        self.rows.len() + self.tails.len()
     }
 
     fn column(&self, column: usize, _: &App) -> Column {
@@ -301,10 +448,55 @@ impl TableDelegate for Directory {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
+        let p = *theme::palette(cx);
+        if let Some(tail) = self.tail(row) {
+            return match column {
+                0 => {
+                    let expand = Rc::clone(&self.hooks.expand);
+                    let folder = self.id;
+                    let lens = tail.lens;
+                    let label = tail.label();
+                    h_flex()
+                        .id(("tail", row))
+                        .role(Role::Button)
+                        .aria_label(format!("Show {label}"))
+                        .cursor_pointer()
+                        .w_full()
+                        .h_full()
+                        .min_w_0()
+                        .gap_2()
+                        .child(
+                            ui::icon(AssetIconName::ChevronRight)
+                                .xsmall()
+                                .text_color(p.ink_3),
+                        )
+                        .child(ui::swatch(p.ink_3, px(10.)).rounded_full().opacity(0.55))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(p.ink_2)
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(label),
+                        )
+                        .on_click(move |_, window, cx| expand(folder, lens, window, cx))
+                        .into_any_element()
+                }
+                2 => v_flex()
+                    .w_full()
+                    .h_full()
+                    .items_end()
+                    .justify_center()
+                    .text_color(p.ink_2)
+                    .font_features(theme::tabular())
+                    .child(format::allocated(tail.size))
+                    .into_any_element(),
+                _ => div().into_any_element(),
+            };
+        }
         let Some(id) = self.row(row) else {
             return div().into_any_element();
         };
-        let p = *theme::palette(cx);
         let tree = &self.cached.tree;
         let node = tree.node(id);
         let color = p.category(self.category(row));
