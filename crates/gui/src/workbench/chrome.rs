@@ -267,7 +267,9 @@ impl Workbench {
                     cx,
                     window,
                 )
-                .when(suggestions > 0, |item| item.child(badge(suggestions, cx))),
+                .when(suggestions > 0, |item| {
+                    item.child(badge(suggestions, "cleanup rule", cx))
+                }),
             );
             find = find.child(nav(
                 "largest-files",
@@ -419,9 +421,10 @@ fn section(title: &'static str, cx: &Context<Workbench>) -> Div {
         .child(ui::eyebrow(title.to_uppercase(), cx).px(px(10.)).pb(px(4.)))
 }
 
-fn badge(count: usize, cx: &Context<Workbench>) -> impl IntoElement + use<> {
+fn badge(count: usize, noun: &'static str, cx: &Context<Workbench>) -> impl IntoElement + use<> {
     let p = theme::palette(cx);
     div()
+        .id(SharedString::from(format!("badge-{noun}")))
         .ml_auto()
         .min_w(px(20.))
         .h(px(18.))
@@ -434,6 +437,7 @@ fn badge(count: usize, cx: &Context<Workbench>) -> impl IntoElement + use<> {
         .flex()
         .items_center()
         .justify_center()
+        .aria_label(format::plural(count, noun))
         .child(count.to_string())
 }
 

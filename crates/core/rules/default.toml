@@ -131,7 +131,7 @@ paths = ["~/Library/Android/sdk"]
 [[rule]]
 id = "android-emulators"
 name = "Android emulator images"
-description = "Disk images for Android emulators. Remove the ones you no longer test on."
+description = "Every Android emulator image in ~/.android/avd. Clearing removes all of them, including emulators you still use."
 category = "android"
 safety = "review"
 paths = ["~/.android/avd"]

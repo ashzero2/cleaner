@@ -1032,20 +1032,48 @@ impl Workbench {
         .into_any_element()
     }
 
+    #[expect(clippy::too_many_lines, reason = "one declarative header")]
     fn results_header(&self, results: &super::Results, cx: &mut Context<Self>) -> Div {
         let p = *theme::palette(cx);
         let shown = self
             .table
             .as_ref()
             .map_or(0, |table| table.read(cx).delegate().rows.len());
-        let detail = if results.total > shown {
-            format!(
-                "Largest {} of {}",
-                format::count(shown as u64),
-                format::count(results.total as u64)
-            )
-        } else {
-            format::plural(shown, "item")
+        let truncated = results.total > shown;
+        let detail = match &results.kind {
+            ResultsKind::Search => {
+                let base = if truncated {
+                    format!(
+                        "Largest {} of {} matches",
+                        format::count(shown as u64),
+                        format::count(results.total as u64)
+                    )
+                } else {
+                    format::plural(shown, "match")
+                };
+                match self.search_scope {
+                    SearchScope::Folder => format!("{base} · this folder"),
+                    SearchScope::Scan => format!("{base} · everywhere"),
+                }
+            }
+            ResultsKind::Largest => {
+                format!("{} · across the scan", format::plural(shown, "file"))
+            }
+            ResultsKind::Suggestions => {
+                let base = if truncated {
+                    format!(
+                        "Largest {} of {} items",
+                        format::count(shown as u64),
+                        format::count(results.total as u64)
+                    )
+                } else {
+                    format::plural(shown, "item")
+                };
+                match results.rules {
+                    Some(rules) => format!("{base} in {}", format::plural(rules, "cleanup rule")),
+                    None => base,
+                }
+            }
         };
         let mut header = h_flex()
             .gap_2()

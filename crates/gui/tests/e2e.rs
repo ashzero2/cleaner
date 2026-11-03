@@ -123,6 +123,7 @@ fn scan_navigate_settings_and_refresh() {
     app.drive("key", "find");
     app.drive("type", "unique");
     app.drive("wait", "Results for “unique”");
+    app.drive("wait", "1 match · this folder");
     app.drive("wait", "Projects/unique-nested-file.txt");
     app.drive("press", "Close");
     app.drive("wait", "readme.txt");
@@ -181,13 +182,15 @@ fn recommendation_group_can_be_staged_and_reviewed() {
     app.drive("wait", ".npm, Folder, safe to clear");
     app.drive("wait", "32.7 KB safe to clear");
     app.drive("press", "Suggestions");
+    app.drive("wait", "1 cleanup rule");
+    app.drive("wait", "1 item in 1 cleanup rule");
     app.drive("press", "Add all");
     app.drive("wait", "Review 1 item");
     app.drive("wait", "1 item in tray, 32.7 KB");
     app.drive("key", "review");
     app.drive("wait", "npm cache clean --force");
-    app.drive("wait", "so you can still put them back");
-    app.drive("wait", "Move to Trash");
+    app.drive("wait", "can't be put back");
+    app.drive("wait", "Run cleanups");
     app.drive("press", "Cancel");
     app.quit();
     assert!(

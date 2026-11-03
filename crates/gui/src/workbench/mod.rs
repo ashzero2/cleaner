@@ -55,6 +55,8 @@ struct Results {
     kind: ResultsKind,
     title: String,
     total: usize,
+    /// Cleanup-rule groups behind the results, for Suggestions mode.
+    rules: Option<usize>,
 }
 
 /// How the last completed scan was produced.
@@ -75,6 +77,8 @@ pub(crate) enum Cleaning {
 #[derive(Clone, Debug)]
 pub(crate) struct CleanReport {
     pub(crate) cleaned: usize,
+    pub(crate) trashed: usize,
+    pub(crate) commanded: usize,
     pub(crate) freed: u64,
     pub(crate) failures: Vec<String>,
 }
@@ -532,6 +536,7 @@ impl Workbench {
                     found.ids,
                     title,
                     found.total,
+                    None,
                     false,
                     window,
                     cx,
@@ -549,11 +554,17 @@ impl Workbench {
         rows: Vec<NodeId>,
         title: String,
         total: usize,
+        rules: Option<usize>,
         focus: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.results = Some(Results { kind, title, total });
+        self.results = Some(Results {
+            kind,
+            title,
+            total,
+            rules,
+        });
         let delegate = Directory::results(cached, folder, rows, &self.suggestions, Self::hooks(cx));
         self.install(delegate, focus, window, cx);
     }
@@ -584,6 +595,7 @@ impl Workbench {
             rows,
             "Largest files".into(),
             total,
+            None,
             true,
             window,
             cx,
@@ -612,6 +624,7 @@ impl Workbench {
             rows,
             "Suggestions".into(),
             total,
+            Some(self.suggestions.groups.len()),
             true,
             window,
             cx,
@@ -744,15 +757,22 @@ impl Workbench {
     ) {
         let mut report = CleanReport {
             cleaned: 0,
+            trashed: 0,
+            commanded: 0,
             freed: 0,
             failures: Vec::new(),
         };
         for (item, result) in outcomes {
             match result {
-                Ok(_) => {
+                Ok(outcome) => {
                     self.selection.staged.remove(&item.id);
                     report.cleaned += 1;
                     report.freed += item.size;
+                    match outcome {
+                        clrs_core::Outcome::Trashed => report.trashed += 1,
+                        clrs_core::Outcome::CommandRan => report.commanded += 1,
+                        clrs_core::Outcome::AlreadyGone => {}
+                    }
                 }
                 Err(error) => report.failures.push(format!("{}: {error}", item.path)),
             }

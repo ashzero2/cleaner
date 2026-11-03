@@ -34,10 +34,10 @@ pub(crate) struct ReviewItem {
 impl ReviewItem {
     fn action(&self) -> String {
         self.command.as_ref().map_or_else(
-            || format!("Move {} to Trash", self.path),
+            || "Move to Trash (you can put it back until the Trash is emptied)".to_owned(),
             |command| {
                 format!(
-                    "Runs {} (moves to Trash if not installed)",
+                    "Runs {} (can't be put back; moves to Trash only if the tool isn't installed)",
                     command.join(" ")
                 )
             },
@@ -87,6 +87,13 @@ pub(crate) fn review(window: &mut Window, cx: &mut Context<Workbench>) {
             .iter()
             .any(|item| item.safety != Some(Safety::Safe));
         let list = Arc::clone(&items);
+        let any_command = items.iter().any(|item| item.command.is_some());
+        let all_command = items.iter().all(|item| item.command.is_some());
+        let row_h = if items.iter().any(|item| item.description.is_some()) {
+            88.
+        } else {
+            76.
+        };
         let body = if count == 0 {
             v_flex().child(note(
                 "The tray is empty. Use + on a row or tile, or Add to tray in the detail card.",
@@ -96,12 +103,16 @@ pub(crate) fn review(window: &mut Window, cx: &mut Context<Workbench>) {
             v_flex()
                 .gap(px(14.))
                 .child(note(
-                    "These go to the Trash, so you can still put them back. Tools with their own cleanup command run that instead.",
+                    if any_command {
+                        "Rows with a cleanup command are cleaned by that tool and can't be put back. Rows without one move to the Trash — you can still put them back, and the space isn't freed until the Trash is emptied."
+                    } else {
+                        "Everything here moves to the Trash, so you can still put them back. The space isn't freed until the Trash is emptied."
+                    },
                     cx,
                 ))
                 .child(
                     div()
-                        .h(px(76. * f32::from(u8::try_from(count.min(5)).unwrap_or(5))))
+                        .h(px(row_h * f32::from(u8::try_from(count.min(5)).unwrap_or(5))))
                         .rounded(px(12.))
                         .border_1()
                         .border_color(p.line)
@@ -121,12 +132,13 @@ pub(crate) fn review(window: &mut Window, cx: &mut Context<Workbench>) {
                                             .id(index)
                                             .role(Role::ListItem)
                                             .aria_label(format!(
-                                                "{}: {}. {action}",
+                                                "{}: {}. {}. {action}",
                                                 item.name,
-                                                format::allocated(item.size)
+                                                format::allocated(item.size),
+                                                item.path
                                             ))
                                             .w_full()
-                                            .h(px(76.))
+                                            .h(px(row_h))
                                             .px(px(14.))
                                             .gap(px(12.))
                                             .border_b_1()
@@ -142,19 +154,26 @@ pub(crate) fn review(window: &mut Window, cx: &mut Context<Workbench>) {
                                                             .child(div().truncate().font_weight(FontWeight::SEMIBOLD).child(item.name.clone()))
                                                             .child(chip),
                                                     )
-                                                    .child(
+                                                    .children(item.description.clone().map(|description| {
                                                         div()
                                                             .truncate()
                                                             .text_size(px(12.))
                                                             .text_color(p.ink_2)
-                                                            .child(item.description.clone().unwrap_or_else(|| item.path.clone())),
-                                                    )
+                                                            .child(description)
+                                                    }))
                                                     .child(
                                                         div()
                                                             .truncate()
                                                             .font_family(theme::MONO_FONT)
-                                                            .text_size(px(11.))
-                                                            .text_color(p.ink_3)
+                                                            .text_size(px(11.5))
+                                                            .text_color(p.ink_2)
+                                                            .child(item.path.clone()),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .truncate()
+                                                            .text_size(px(12.))
+                                                            .text_color(p.ink)
                                                             .child(action),
                                                     ),
                                             )
@@ -220,8 +239,12 @@ pub(crate) fn review(window: &mut Window, cx: &mut Context<Workbench>) {
                         Button::new("clean-staged")
                             .label(if let Some(total) = running {
                                 format!("Clearing {}…", format::plural(total, "item"))
-                            } else {
+                            } else if !any_command {
                                 "Move to Trash".to_owned()
+                            } else if all_command {
+                                "Run cleanups".to_owned()
+                            } else {
+                                format!("Clear {}", format::plural(count, "item"))
                             })
                             .icon(IconName::Trash)
                             .loading(running.is_some())
@@ -244,6 +267,13 @@ fn done(
 ) -> gpui_kit::component::dialog::Dialog {
     let p = *theme::palette(cx);
     let headline = format!("{} is on its way out", format::allocated(report.freed));
+    let detail = if report.commanded > 0 && report.trashed > 0 {
+        "Trashed items free their space when the Trash is emptied; items cleaned by their tools' own commands are already gone."
+    } else if report.commanded > 0 {
+        "Cleaned by their tools' own commands, so the space is already free and nothing is in the Trash."
+    } else {
+        "Empty the Trash to get the space back."
+    };
     let mut body = v_flex()
         .items_center()
         .gap(px(10.))
@@ -267,7 +297,7 @@ fn done(
                 .child(ui::display(headline, 22.)),
         )
         .child(div().text_color(p.ink_2).text_center().child(format!(
-            "Cleared {} of {} items. Empty the Trash to get the space back.",
+            "Cleared {} of {} items. {detail}",
             report.cleaned,
             report.cleaned + report.failures.len()
         )));
@@ -295,31 +325,30 @@ fn done(
         );
     }
     let closer = view.clone();
+    let mut footer = h_flex().w_full().justify_center().gap_2();
+    if report.trashed > 0 {
+        footer = footer.child(
+            Button::new("open-trash")
+                .label("Open Trash")
+                .outline()
+                .on_click(|_, _, cx| {
+                    if let Some(home) = std::env::home_dir() {
+                        cx.open_with_system(&home.join(".Trash"));
+                    }
+                }),
+        );
+    }
     dialog
         .w(px(480.))
         .child(body)
         .on_close(move |_, _, cx| closer.update(cx, Workbench::finish_review))
         .footer(
-            h_flex()
-                .w_full()
-                .justify_center()
-                .gap_2()
-                .child(
-                    Button::new("open-trash")
-                        .label("Open Trash")
-                        .outline()
-                        .on_click(|_, _, cx| {
-                            if let Some(home) = std::env::home_dir() {
-                                cx.open_with_system(&home.join(".Trash"));
-                            }
-                        }),
-                )
-                .child(Button::new("done-review").label("Done").primary().on_click(
-                    move |_, window, cx| {
-                        view.update(cx, Workbench::finish_review);
-                        window.close_dialog(cx);
-                    },
-                )),
+            footer.child(Button::new("done-review").label("Done").primary().on_click(
+                move |_, window, cx| {
+                    view.update(cx, Workbench::finish_review);
+                    window.close_dialog(cx);
+                },
+            )),
         )
 }
 
@@ -562,7 +591,7 @@ pub(crate) fn settings(window: &mut Window, cx: &mut Context<Workbench>) {
                             .into_any_element(),
                     ))
                     .child(div().pt(px(12.)).child(note(
-                        "Saved scans make repeat scans fast. Scans across volumes are never saved. Symlinks are never followed, and nothing is moved until you choose Move to Trash.",
+                        "Saved scans make repeat scans fast. Scans across volumes are never saved. Symlinks are never followed, and nothing is removed until you review it and choose to clear it.",
                         cx,
                     ))),
             )
