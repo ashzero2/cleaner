@@ -11,7 +11,7 @@ cl-rs is a friendly, warm Mac utility that answers one question fast: **what is 
 
 - **Personality:** friendly and warm, not goofy. Soft surfaces, rounded shapes, an apricot accent and kind, plain copy. It must still feel trustworthy enough to delete things. A mascot may come later and must fit this style. No characters or jokes for now.
 - **Structure:** one explorer window. The treemap sits beside the list with its legend underneath, a detail card sits under the list, and a collector tray runs along the bottom. There is no right-hand inspector column.
-- **Hero visual:** a squarified treemap coloured by **category**, with one level of nested sub-folders inside large tiles. There is no sunburst.
+- **Hero visual:** a one-level squarified treemap coloured by **category**; double-click drills into a folder for detail, and entries too small to label fold into one "smaller items" tile. There is no sunburst.
 - **Themes:** light and dark are both first-class. The app follows the system appearance, with an override in Settings.
 - **Native first:** use macOS conventions (sheet from the title bar, ⌘ shortcuts, Reveal in Finder, Trash semantics) and the system font for body text.
 
@@ -116,11 +116,11 @@ Every number shown in a column, the summary, the tray or a chip uses tabular fig
 
 | Region | Size | Notes |
 |---|---|---|
-| Window minimum | 1040 × 680 | Unchanged |
+| Window minimum | 720 × 560 | Fits half a laptop screen; hiding the map frees more |
 | Toolbar | 54 | Unified with the title bar; traffic lights live in it |
 | Sidebar | 210 fixed | `chrome`, 1 pt right hairline |
 | Main split | treemap column 0.67fr : list 1fr | Gap 16. The list leads; the treemap keeps proportion context. |
-| Tray | 68 | Always visible once a scan is loaded; its empty state teaches the + button |
+| Tray | 68 with items, 38 empty | Always visible once a scan is loaded; the empty footer is a slim hint that expands when something is staged |
 
 The status bar is removed. Scan source and timing move to the summary subtitle, and staged totals move to the tray.
 
