@@ -111,6 +111,9 @@ fn scan_navigate_settings_and_refresh() {
     app.drive("key", "forward");
     app.drive("wait", "readme.txt");
     app.drive("key", "down");
+    app.drive("key", "down");
+    app.drive("key", "down");
+    app.drive("wait", "Preview");
     app.drive("key", "stage");
     app.drive("wait", "Review 1 item");
     app.drive("wait", "1 item in tray");

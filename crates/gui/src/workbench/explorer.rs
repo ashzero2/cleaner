@@ -763,7 +763,7 @@ impl Workbench {
             .child(
                 Button::new("reveal")
                     .label("Reveal")
-                    .icon(IconName::Eye)
+                    .icon(IconName::ArrowUpRight)
                     .outline()
                     .small()
                     .tooltip("Reveal in Finder")
@@ -779,6 +779,18 @@ impl Workbench {
                     .accessibility_label("Copy Path")
                     .on_click(cx.listener(|this, _, _, cx| this.copy_path(cx))),
             );
+        if node.kind() == EntryKind::File {
+            actions = actions.child(
+                Button::new("preview")
+                    .label("Preview")
+                    .icon(IconName::Eye)
+                    .outline()
+                    .small()
+                    .tooltip("Quick Look")
+                    .accessibility_label("Quick Look preview")
+                    .on_click(cx.listener(|this, _, _, cx| this.preview(cx))),
+            );
+        }
         if can_stage {
             actions = actions.child(Self::stage_button(self.selection.is_staged(subject), cx));
         }
@@ -1045,7 +1057,15 @@ impl Workbench {
                     .truncate()
                     .child(results.title.clone()),
             )
-            .child(
+            .child(if self.searching {
+                div()
+                    .id("results-detail")
+                    .role(Role::Label)
+                    .aria_label("Searching")
+                    .flex_shrink_0()
+                    .text_color(p.ink_2)
+                    .child("Searching…")
+            } else {
                 div()
                     .id("results-detail")
                     .role(Role::Label)
@@ -1054,8 +1074,8 @@ impl Workbench {
                     .font_features(theme::tabular())
                     .min_w_0()
                     .truncate()
-                    .child(detail),
-            )
+                    .child(detail)
+            })
             .child(div().flex_1());
         if results.kind == ResultsKind::Search {
             for (label, scope) in [

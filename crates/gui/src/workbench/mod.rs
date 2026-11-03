@@ -102,6 +102,8 @@ pub(crate) struct Workbench {
     search_scope: SearchScope,
     search_task: Option<Task<()>>,
     search_cancel: Arc<AtomicBool>,
+    /// A search is running: shown results may be stale and must not be read as matches.
+    searching: bool,
     results: Option<Results>,
     suggestions: Arc<Suggestions>,
     analysis: Option<Task<()>>,
@@ -197,6 +199,7 @@ impl Workbench {
             search_scope: SearchScope::Folder,
             search_task: None,
             search_cancel: Arc::new(AtomicBool::new(false)),
+            searching: false,
             results: None,
             suggestions: Arc::new(Suggestions::default()),
             analysis: None,
@@ -486,6 +489,7 @@ impl Workbench {
     fn cancel_search(&mut self) {
         self.search_cancel.store(true, Ordering::Relaxed);
         self.search_task = None;
+        self.searching = false;
     }
 
     fn run_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -510,6 +514,8 @@ impl Workbench {
             SearchScope::Folder => folder,
             SearchScope::Scan => cached.tree.root(),
         };
+        self.searching = true;
+        cx.notify();
         let cancel = Arc::new(AtomicBool::new(false));
         self.search_cancel = Arc::clone(&cancel);
         self.search_task = Some(cx.spawn_in(window, async move |view, cx| {
@@ -528,6 +534,7 @@ impl Workbench {
                 return;
             }
             let _ = view.update_in(cx, |this, window, cx| {
+                this.searching = false;
                 let title = format!("Results for “{query}”");
                 this.show_results(
                     ResultsKind::Search,
@@ -901,6 +908,31 @@ impl Workbench {
                 cx.write_to_clipboard(ClipboardItem::new_string(path.into()));
             } else {
                 self.warning = Some("This path contains non-Unicode bytes and cannot be copied exactly as text. Use Reveal in Finder.".into());
+                cx.notify();
+            }
+        }
+    }
+
+    /// Opens the system Quick Look window (`qlmanage -p`) on the selection. The child is
+    /// reaped on a side thread so closing the preview leaves no zombie.
+    fn preview(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.selection_path(cx) else {
+            return;
+        };
+        let preview = std::process::Command::new("/usr/bin/qlmanage")
+            .arg("-p")
+            .arg(&path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        match preview {
+            Ok(mut child) => {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
+            Err(error) => {
+                self.warning = Some(format!("Could not open Quick Look: {error}"));
                 cx.notify();
             }
         }

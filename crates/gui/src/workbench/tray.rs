@@ -1,6 +1,6 @@
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::{Disableable as _, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::{
     Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Role,
     StatefulInteractiveElement as _, Styled as _, div, px,
@@ -19,15 +19,34 @@ impl Workbench {
         let items = self.review(cx);
         let count = items.len();
         let total: u64 = items.iter().map(|item| item.size).sum();
-        let summary = if count == 0 {
-            "Tray is empty".to_owned()
-        } else {
-            format!(
-                "{} in tray, {}",
-                format::plural(count, "item"),
-                format::allocated(total)
-            )
-        };
+        if count == 0 {
+            return h_flex()
+                .id("tray")
+                .role(Role::Status)
+                .aria_label("Tray is empty. Use + on anything you'd like to clear, then review it here.")
+                .flex_shrink_0()
+                .h(px(38.))
+                .pl(px(14.))
+                .pr(px(16.))
+                .gap(px(8.))
+                .items_center()
+                .bg(p.chrome)
+                .border_t_1()
+                .border_color(p.line)
+                .child(ui::icon(IconName::Trash).small().text_color(p.ink_3))
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(p.ink_2)
+                        .truncate()
+                        .child("Nothing set aside yet. Use + on anything you'd like to clear, then review it here."),
+                );
+        }
+        let summary = format!(
+            "{} in tray, {}",
+            format::plural(count, "item"),
+            format::allocated(total)
+        );
         let mut bin = div()
             .relative()
             .flex_shrink_0()
@@ -61,14 +80,6 @@ impl Workbench {
             );
         }
         let mut middle = h_flex().flex_1().min_w_0().gap_2().overflow_hidden();
-        if count == 0 {
-            middle = middle.child(
-                div()
-                    .text_color(p.ink_2)
-                    .truncate()
-                    .child("Nothing set aside yet. Use + on anything you'd like to clear, then review it here."),
-            );
-        }
         for (index, item) in items.iter().take(CHIPS).enumerate() {
             let id = item.id;
             middle = middle.child(
@@ -115,13 +126,8 @@ impl Workbench {
             );
         }
         let review = Button::new("review")
-            .label(if count == 0 {
-                "Review".to_owned()
-            } else {
-                format!("Review {}", format::plural(count, "item"))
-            })
+            .label(format!("Review {}", format::plural(count, "item")))
             .primary()
-            .disabled(count == 0)
             .on_click(cx.listener(|_, _, window, cx| panels::review(window, cx)));
         h_flex()
             .id("tray")
