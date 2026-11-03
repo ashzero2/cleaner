@@ -28,7 +28,16 @@ use gpui_kit::{
 
 gpui_kit::assets::icon_assets!(
     ExtraIcons,
-    [House, FolderPlus, Sparkles, Lock, Clock, Trash, X]
+    [
+        House,
+        FolderPlus,
+        Sparkles,
+        Lock,
+        Clock,
+        Trash,
+        X,
+        ShieldCheck
+    ]
 );
 
 /// The kit's default assets plus the icons the window uses beyond them.

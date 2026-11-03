@@ -26,7 +26,8 @@ gpui::actions!(
         Back,
         Forward,
         Find,
-        ClearStaged
+        ClearStaged,
+        ToggleSidebar
     ]
 );
 
@@ -50,6 +51,7 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("cmd-l", OpenLargestFiles, Some("Workbench")),
         KeyBinding::new("cmd-[", Back, Some("Workbench")),
         KeyBinding::new("cmd-]", Forward, Some("Workbench")),
+        KeyBinding::new("cmd-alt-s", ToggleSidebar, Some("Workbench")),
     ]);
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.set_menus([
@@ -67,6 +69,8 @@ pub(crate) fn init(cx: &mut App) {
             MenuItem::action("Stop Scan", StopScan),
         ]),
         Menu::new("View").items([
+            MenuItem::action("Show/Hide Sidebar", ToggleSidebar),
+            MenuItem::separator(),
             MenuItem::action("Back", Back),
             MenuItem::action("Forward", Forward),
             MenuItem::action("Enclosing Folder", ParentFolder),

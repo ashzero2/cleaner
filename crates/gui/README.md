@@ -1,6 +1,6 @@
 # cl-rs native GUI
 
-Phase 1 is a **read-only** macOS storage workbench. It calls `clrs-core` directly; it does not spawn the CLI, duplicate the scanner, or execute cleanup actions.
+Phase 1 is a macOS storage workbench that explores read-only; Phase 2 adds staging and cleanup through an explicit review step. It calls `clrs-core` directly; it does not spawn the CLI or duplicate the scanner; cleanup runs only from the review sheet.
 
 ## Build and run
 
@@ -31,7 +31,13 @@ Use the `.app`, not the raw `target/debug/cl-rs-gui` executable. In local valida
 - System/light/dark appearance, comfortable/compact density and persisted window bounds.
 - Scan Issues sheet and Full Disk Access guidance when macOS denies access.
 
-No search, treemap, recommendations, arbitrary Trash or cleanup execution is included in Phase 1. Refresh currently returns to the scan root rather than restoring a nested selection.
+The optional **Show Treemap** pane draws the current folder's largest entries as a squarified treemap above the table; clicking a tile selects its row (Shift/Control extend the selection), double-clicking a folder opens it, and hovering shows the name and size. Only the largest 150 entries are drawn.
+
+**Search** (Cmd-F): live, case-insensitive name search of the current folder or the entire scan, run off the UI thread; results list paths relative to the scan root, largest first (500 shown). Esc or Close returns to the folder. **Back/Forward** (Cmd-[ / Cmd-]) walk folder history. Cmd-L lists the largest files. Packages (`.app`, `.framework`, …) show as "Package".
+
+**Recommendations**: after each scan the sidebar lists the built-in cleanup rules (`clrs-core::rules`) that matched, largest first; selecting one lists its locations. **Stage** items (Cmd-T, the inspector, or Stage All), then **Review** (Cmd-Shift-E) shows what each would do: move to the Trash, or run the rule's command if installed. The review sheet's **Clean** button runs the same engine as `cl-rs clean`: each item goes to the Trash (never `rm`) or runs the rule's command when installed, symlinks and very shallow paths are refused, failures stay staged, and a rescan follows. Space is only freed once the Trash is emptied.
+
+Refresh currently returns to the scan root rather than restoring a nested selection.
 
 ### Keyboard
 
@@ -45,6 +51,11 @@ No search, treemap, recommendations, arbitrary Trash or cleanup execution is inc
 | Cmd-Down | Open selected folder |
 | Cmd-Up | Enclosing folder within the scan |
 | Cmd-I | Toggle inspector |
+| Cmd-F | Search |
+| Cmd-[ / Cmd-] | Back / Forward |
+| Cmd-L | Largest files |
+| Cmd-T / Cmd-Shift-T | Stage / unstage selection |
+| Cmd-Shift-E | Review staged items |
 | Cmd-Shift-C | Copy selected/current path |
 | Cmd-, | Settings |
 | Cmd-Q | Quit and save settings |

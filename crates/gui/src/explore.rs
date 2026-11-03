@@ -6,6 +6,7 @@ use std::sync::Arc;
 use clrs_core::{Cached, EntryKind, NodeId, Safety};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::table::{Column, TableDelegate, TableState};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::{
     App, Context, Div, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
@@ -321,7 +322,7 @@ impl TableDelegate for Directory {
                     .min_w_0()
                     .gap_2()
                     .child(ui::swatch(color, px(10.)))
-                    .child(Icon::new(icon).xsmall().text_color(p.ink_3))
+                    .child(Icon::new(icon).small().text_color(p.ink_2))
                     .child(
                         div()
                             .min_w_0()
@@ -336,7 +337,12 @@ impl TableDelegate for Directory {
                             .child(label),
                     )
                     .children(hint.map(|hint| {
+                        let label = ui::hint_label(hint);
                         ui::chip(hint, cx)
+                            .id(("hint", row))
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(label.clone()).build(window, cx)
+                            })
                             .flex_shrink(1.)
                             .min_w_0()
                             .overflow_hidden()
@@ -363,7 +369,7 @@ impl TableDelegate for Directory {
                 )
                 .child(
                     div()
-                        .text_size(px(10.5))
+                        .text_size(px(11.5))
                         .text_color(p.ink_2)
                         .child(format::percent(self.share(id))),
                 )
@@ -378,7 +384,7 @@ impl TableDelegate for Directory {
                     } else {
                         IconName::Plus
                     })
-                    .xsmall()
+                    .small()
                     .tooltip(if staged {
                         "Remove from tray"
                     } else {

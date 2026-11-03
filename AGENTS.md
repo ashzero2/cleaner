@@ -10,7 +10,7 @@ Fast disk space analyzer and cleaner for macOS. A Rust core library shared by th
 ## Commands
 - `cargo fmt --all && cargo clippy --all-targets && cargo test` must be clean (zero warnings) before finishing.
 - Benchmark: `cargo build --release && target/release/cl-rs scan ~ -d 0`. Baselines on 3.4M files (`/usr/bin/time -l`): cold scan ~14.5 s and ~435 MB peak RSS; repeat scan from the cache under 2 s and ~300 MB. Don't regress them.
-- Approved GUI Phase 1 lives in `crates/gui` (`cl-rs-gui`): native GPUI Kit, read-only exploration, no cleanup execution. Build its development bundle with `sh scripts/bundle_gui.sh`; see `crates/gui/README.md` for native validation.
+- Approved GUI Phase 1 lives in `crates/gui` (`cl-rs-gui`): native GPUI Kit; exploration is read-only and cleanup runs only from the review sheet via `clrs_core::clean_target`. Build its development bundle with `sh scripts/bundle_gui.sh`; see `crates/gui/README.md` for native validation.
 - Full-workspace checks: `cargo fmt --all && cargo clippy --workspace --all-targets && cargo test --workspace`. For core/CLI-only iterations, use `-p clrs-core -p cl-rs`.
 
 ## Code style

@@ -22,8 +22,8 @@ use gpui_kit::{
 use crate::actions::{
     Back, CancelSearch, ChooseFolder, ClearStaged, CopyPath, Find, Forward, FreshScan, OpenFolder,
     OpenLargestFiles, OpenSettings, ParentFolder, Refresh, Reveal, ReviewChanges, ScanHome,
-    ShowIssues, ShowSuggestions, StageSelection, StopScan, ToggleSelectionMode, TrashSelection,
-    UnstageSelection,
+    ShowIssues, ShowSuggestions, StageSelection, StopScan, ToggleSelectionMode, ToggleSidebar,
+    TrashSelection, UnstageSelection,
 };
 use crate::explore::{Directory, Hooks};
 use crate::jobs::{Event, Jobs, ScanRequest};
@@ -532,6 +532,7 @@ impl Workbench {
                     found.ids,
                     title,
                     found.total,
+                    false,
                     window,
                     cx,
                 );
@@ -548,12 +549,13 @@ impl Workbench {
         rows: Vec<NodeId>,
         title: String,
         total: usize,
+        focus: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.results = Some(Results { kind, title, total });
         let delegate = Directory::results(cached, folder, rows, &self.suggestions, Self::hooks(cx));
-        self.install(delegate, false, window, cx);
+        self.install(delegate, focus, window, cx);
     }
 
     fn close_results(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -582,6 +584,7 @@ impl Workbench {
             rows,
             "Largest files".into(),
             total,
+            true,
             window,
             cx,
         );
@@ -609,6 +612,7 @@ impl Workbench {
             rows,
             "Suggestions".into(),
             total,
+            true,
             window,
             cx,
         );
@@ -895,18 +899,23 @@ impl Workbench {
         self.selection.stage_all();
         self.sync_staged(cx);
     }
+
+    fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.settings.sidebar_visible = !self.settings.sidebar_visible;
+        self.persist(cx);
+        cx.notify();
+    }
 }
 
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.fit_list(cx);
         let p = *theme::palette(cx);
-        let mut body = h_flex()
-            .flex_1()
-            .min_h_0()
-            .items_stretch()
-            .child(self.sidebar(cx))
-            .child(self.main(window, cx));
+        let mut body = h_flex().flex_1().min_h_0().items_stretch();
+        if self.settings.sidebar_visible {
+            body = body.child(self.sidebar(window, cx));
+        }
+        body = body.child(self.main(window, cx));
         if self.table.is_none() {
             body = body.bg(p.window);
         }
@@ -936,6 +945,7 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &Reveal, _, cx| this.reveal(cx)))
             .on_action(cx.listener(|this, _: &CopyPath, _, cx| this.copy_path(cx)))
             .on_action(cx.listener(|_, _: &OpenSettings, window, cx| panels::settings(window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(|this, _: &ShowIssues, window, cx| this.issues(window, cx)))
             .on_action(cx.listener(|this, _: &ShowSuggestions, window, cx| {
                 this.show_suggestions(window, cx);

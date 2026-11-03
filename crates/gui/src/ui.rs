@@ -70,7 +70,7 @@ pub(crate) fn safety_text(safety: Safety) -> &'static str {
 
 pub(crate) fn hint_label(hint: &Hint) -> String {
     if hint.inside {
-        format!("{} inside", hint.name)
+        format!("Contains {}", hint.name)
     } else {
         safety_text(hint.safety).to_lowercase()
     }
@@ -79,7 +79,7 @@ pub(crate) fn hint_label(hint: &Hint) -> String {
 /// A pill showing how safe a match is to clear; matches inside a folder are outlined.
 pub(crate) fn chip(hint: &Hint, cx: &App) -> Div {
     let text = if hint.inside {
-        format!("{} inside", hint.name)
+        hint.name.clone()
     } else {
         safety_text(hint.safety).to_owned()
     };
@@ -99,6 +99,7 @@ pub(crate) fn safety_chip(
     };
     let chip = h_flex()
         .h(px(20.))
+        .min_w_0()
         .px(px(7.))
         .gap_1()
         .rounded_full()
@@ -114,7 +115,33 @@ pub(crate) fn safety_chip(
     chip.when(filled && safety == Safety::Safe, |chip| {
         chip.child(icon(IconName::Check).size(px(10.)))
     })
-    .child(text.into())
+    .child(div().min_w_0().truncate().child(text.into()))
+}
+
+/// A 2 pt keyboard-focus ring drawn outside a control's edge. The parent must be relative.
+pub(crate) fn focus_outline(radius: Pixels, color: Hsla) -> Div {
+    div()
+        .absolute()
+        .top(px(-2.))
+        .left(px(-2.))
+        .right(px(-2.))
+        .bottom(px(-2.))
+        .rounded(radius + px(2.))
+        .border_2()
+        .border_color(color)
+}
+
+/// A 2 pt keyboard-focus ring drawn inside a clipping container.
+pub(crate) fn focus_inside(radius: Pixels, color: Hsla) -> Div {
+    div()
+        .absolute()
+        .top(px(2.))
+        .left(px(2.))
+        .right(px(2.))
+        .bottom(px(2.))
+        .rounded(radius - px(2.))
+        .border_2()
+        .border_color(color)
 }
 
 /// A raised card: the list, the detail card and the summary meter.

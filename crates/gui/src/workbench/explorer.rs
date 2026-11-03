@@ -11,8 +11,8 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Selectable as _, Sizable as _, Size, h_flex, v_flex};
 use gpui_kit::{
     AnyElement, ClickEvent, Context, Div, FontWeight, InteractiveElement as _, IntoElement,
-    ParentElement as _, Role, StatefulInteractiveElement as _, Styled as _, Window, canvas, div,
-    prelude::FluentBuilder as _, px, relative, white,
+    KeyDownEvent, ParentElement as _, Role, StatefulInteractiveElement as _, Styled as _, Window,
+    canvas, div, prelude::FluentBuilder as _, px, relative, white,
 };
 
 use super::{ResultsKind, SearchScope, Workbench};
@@ -43,13 +43,15 @@ impl Workbench {
     ) -> impl IntoElement + use<> {
         let mut main = v_flex()
             .id("main")
+            .role(Role::Main)
+            .aria_label("Disk space explorer")
             .flex_1()
             .min_w_0()
             .min_h_0()
             .px(px(20.))
             .pt(px(18.))
             .pb(px(14.))
-            .gap(px(14.));
+            .gap(px(16.));
         if let Some(warning) = &self.warning {
             main = main.child(Self::callout(warning.clone(), cx));
         }
@@ -61,21 +63,27 @@ impl Workbench {
             });
         }
         let chart = v_flex()
-            .w(relative(0.52))
+            .w(relative(0.40))
             .flex_shrink_0()
             .min_h_0()
-            .gap(px(10.))
+            .gap(px(12.))
             .child(self.treemap(window, cx))
-            .child(self.legend(cx))
+            .child(self.legend(cx));
+        let list = v_flex()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .gap(px(12.))
+            .child(self.list(cx))
             .child(self.detail(cx));
-        main.child(self.summary(cx)).child(
+        main.child(self.summary(window, cx)).child(
             h_flex()
                 .flex_1()
                 .min_h_0()
                 .items_stretch()
                 .gap(px(16.))
                 .child(chart)
-                .child(self.list(cx)),
+                .child(list),
         )
     }
 
@@ -241,19 +249,31 @@ impl Workbench {
     }
 
     #[expect(clippy::too_many_lines, reason = "one declarative view tree")]
-    fn summary(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn summary(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let p = *theme::palette(cx);
         let (Some(cached), Some(folder)) = (self.cached(cx), self.folder(cx)) else {
             return div().into_any_element();
         };
+        let focus = window
+            .use_keyed_state("reclaimable", cx, |_, cx| cx.focus_handle())
+            .read(cx)
+            .clone();
+        let focused = focus.is_focused(window);
         let tree = &cached.tree;
         let node = tree.node(folder);
-        let name =
-            if folder == tree.root() && std::env::home_dir().as_deref() == Some(tree.root_path()) {
-                "Home".to_owned()
-            } else {
-                tree.name(folder).to_string_lossy().into_owned()
-            };
+        let name = if folder == tree.root() {
+            format::name(tree.root_path())
+        } else {
+            tree.name(folder).to_string_lossy().into_owned()
+        };
+        let unread = if cached.issues.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " · {} folders unread",
+                format::count(cached.issues.len() as u64)
+            )
+        };
         let status = if let Some(running) = &self.running {
             format!(
                 "Rescanning… {} files so far",
@@ -276,7 +296,7 @@ impl Workbench {
                     )
                 }
             });
-            format!("{} files{source}", format::count(node.files()))
+            format!("{} files{unread}{source}", format::count(node.files()))
         };
         let (safe, review) = self.suggestions.reclaimable(tree, folder);
         let size = node.size();
@@ -289,6 +309,7 @@ impl Workbench {
                 format::allocated(review)
             )
         };
+        let has_suggestions = safe + review > 0;
         let meter = h_flex()
             .h(px(8.))
             .w_full()
@@ -331,10 +352,12 @@ impl Workbench {
                         .font_features(theme::tabular())
                         .child(format!("+ {} worth a look", format::allocated(review))),
                 )
+                .child(ui::icon(IconName::ChevronRight).small().text_color(p.ink_2))
                 .into_any_element()
         };
         h_flex()
             .items_end()
+            .min_w_0()
             .gap(px(24.))
             .child(
                 v_flex()
@@ -344,12 +367,23 @@ impl Workbench {
                         h_flex()
                             .id("folder-size")
                             .role(Role::Label)
-                            .aria_label(format!("{} in {name}", format::allocated(size)))
+                            .aria_label(if cached.issues.is_empty() {
+                                format!("{} in {name}", format::allocated(size))
+                            } else {
+                                format!(
+                                    "{} in {name}; {} folders unread",
+                                    format::allocated(size),
+                                    format::count(cached.issues.len() as u64)
+                                )
+                            })
+                            .min_w_0()
                             .items_baseline()
                             .gap_2()
                             .child(ui::display(format::allocated(size), 32.))
                             .child(
                                 div()
+                                    .min_w_0()
+                                    .truncate()
                                     .text_size(px(16.))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(p.ink_2)
@@ -371,8 +405,18 @@ impl Workbench {
             .child(
                 v_flex()
                     .id("reclaimable")
-                    .role(Role::Button)
-                    .aria_label(reclaim_label)
+                    .when(has_suggestions, |card| {
+                        card.role(Role::Button)
+                            .aria_label(format!("{reclaim_label}. Open suggestions"))
+                            .relative()
+                            .track_focus(&focus)
+                            .tab_index(0)
+                            .cursor_pointer()
+                            .hover(|style| style.border_color(p.ink_3))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.show_suggestions(window, cx);
+                            }))
+                    })
                     .w(px(380.))
                     .flex_shrink_0()
                     .gap(px(8.))
@@ -382,11 +426,11 @@ impl Workbench {
                     .bg(p.panel)
                     .border_1()
                     .border_color(p.line)
-                    .cursor_pointer()
-                    .hover(|style| style.border_color(p.ink_3))
-                    .on_click(cx.listener(|this, _, window, cx| this.show_suggestions(window, cx)))
                     .child(headline)
-                    .child(meter),
+                    .child(meter)
+                    .when(has_suggestions && focused, |card| {
+                        card.child(ui::focus_outline(px(14.), p.accent_fill))
+                    }),
             )
             .into_any_element()
     }
@@ -423,8 +467,13 @@ impl Workbench {
         Some(blocks)
     }
 
-    fn treemap(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn treemap(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let p = *theme::palette(cx);
+        let focus = window
+            .use_keyed_state("treemap", cx, |_, cx| cx.focus_handle())
+            .read(cx)
+            .clone();
+        let focused = focus.is_focused(window);
         let measure = Rc::clone(&self.treemap_size);
         let view = cx.weak_entity();
         let mut area = div().relative().size_full().child(
@@ -444,6 +493,12 @@ impl Workbench {
             .size_full(),
         );
         let blocks = self.blocks(cx).unwrap_or_default();
+        let ids = Rc::new(
+            blocks
+                .iter()
+                .filter_map(|block| block.id)
+                .collect::<Vec<_>>(),
+        );
         let parent = self
             .cached(cx)
             .zip(self.folder(cx))
@@ -462,7 +517,18 @@ impl Workbench {
         div()
             .id("treemap")
             .role(Role::List)
-            .aria_label("Treemap of the open folder")
+            .aria_label(format!(
+                "Treemap of the open folder, {}",
+                format::plural(ids.len(), "item")
+            ))
+            .track_focus(&focus)
+            .tab_index(0)
+            .on_key_down(cx.listener({
+                let ids = Rc::clone(&ids);
+                move |this, event: &KeyDownEvent, window, cx| {
+                    this.treemap_key(event, &ids, window, cx);
+                }
+            }))
             .flex_1()
             .min_h(px(160.))
             .rounded(px(14.))
@@ -472,11 +538,14 @@ impl Workbench {
             .p(px(8.))
             .overflow_hidden()
             .child(area)
+            .when(focused, |area| {
+                area.child(ui::focus_inside(px(14.), p.accent_fill))
+            })
     }
 
     #[expect(clippy::too_many_lines, reason = "one declarative view tree")]
     fn tile(&self, index: usize, block: &Block, parent: u64, cx: &mut Context<Self>) -> AnyElement {
-        const GAP: f32 = 3.;
+        const GAP: f32 = treemap::TILE_GAP;
         let p = *theme::palette(cx);
         let color = p.category(block.category);
         let (width, height) = (block.width - GAP, block.height - GAP);
@@ -502,12 +571,13 @@ impl Workbench {
             .id(("tile", index))
             .role(Role::ListItem)
             .aria_label(label)
+            .aria_selected(selected)
             .absolute()
             .left(px(block.x))
             .top(px(block.y))
             .w(px(width.max(1.)))
             .h(px(height.max(1.)))
-            .px(px(8.))
+            .px(px(6.))
             .py(px(7.))
             .overflow_hidden()
             .rounded(px(8.))
@@ -526,42 +596,54 @@ impl Workbench {
                 }));
         }
         for (offset, nested) in block.nested.iter().enumerate() {
-            let id = nested.id;
+            let nested_selected = nested.id.is_some_and(|id| self.selection.is_selected(id));
             let tip = format!("{}\n{}", nested.name, format::allocated(nested.size));
-            tile = tile.child(
-                div()
-                    .id(("nested", index * 64 + offset))
-                    .absolute()
-                    .left(px(nested.x + 1.))
-                    .top(px(nested.y + 1.))
-                    .w(px((nested.width - 3.).max(1.)))
-                    .h(px((nested.height - 3.).max(1.)))
-                    .rounded(px(5.))
-                    .bg(p.shade)
-                    .hover(|style| style.bg(p.shade.opacity(0.9).blend(white().opacity(0.12))))
-                    .when(self.selection.is_selected(id), |tile| {
-                        tile.border_2().border_color(p.ink)
-                    })
-                    .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+            let label = format!(
+                "{}, {}, {} of the folder",
+                nested.name,
+                format::allocated(nested.size),
+                format::percent(ui::share(nested.size, parent))
+            );
+            let mut nested_tile = div()
+                .id(("nested", index * 64 + offset))
+                .role(Role::ListItem)
+                .aria_label(label)
+                .aria_selected(nested_selected)
+                .absolute()
+                .left(px(nested.x + 1.))
+                .top(px(nested.y + 1.))
+                .w(px((nested.width - 3.).max(1.)))
+                .h(px((nested.height - 3.).max(1.)))
+                .rounded(px(5.))
+                .bg(p.shade)
+                .hover(|style| style.bg(p.shade.opacity(0.9).blend(white().opacity(0.12))))
+                .when(nested_selected, |tile| tile.border_2().border_color(p.ink))
+                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx));
+            if let Some(id) = nested.id {
+                nested_tile = nested_tile.cursor_pointer().on_click(cx.listener(
+                    move |this, event: &ClickEvent, window, cx| {
                         cx.stop_propagation();
                         this.pick(id, event.click_count(), window, cx);
-                    }))
-                    .when(nested.width > 80. && nested.height > 22., |tile| {
-                        tile.child(
-                            div()
-                                .px(px(6.))
-                                .pt(px(3.))
-                                .truncate()
-                                .text_size(px(10.5))
-                                .font_weight(FontWeight::MEDIUM)
-                                .opacity(0.8)
-                                .child(nested.name.clone()),
-                        )
-                    }),
-            );
+                    },
+                ));
+            }
+            if nested.width - treemap::TILE_GAP >= treemap::NESTED_LABEL_WIDTH
+                && nested.height - treemap::TILE_GAP >= treemap::NESTED_LABEL_HEIGHT
+            {
+                nested_tile = nested_tile.child(
+                    div()
+                        .px(px(6.))
+                        .pt(px(3.))
+                        .truncate()
+                        .text_size(px(11.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .opacity(0.8)
+                        .child(nested.name.clone()),
+                );
+            }
+            tile = tile.child(nested_tile);
         }
-        if width >= 62. && height >= 34. {
+        if width >= treemap::LABEL_WIDTH && height >= treemap::LABEL_HEIGHT {
             tile = tile
                 .child(
                     div()
@@ -596,7 +678,7 @@ impl Workbench {
                     .justify_center()
                     .child(
                         ui::icon(match safety {
-                            Safety::Safe => IconName::Check,
+                            Safety::Safe => IconName::ShieldCheck,
                             Safety::Review => IconName::Eye,
                         })
                         .size(px(11.))
@@ -610,6 +692,48 @@ impl Workbench {
         tile.into_any_element()
     }
 
+    /// Arrow keys move through the drawn tiles and Enter opens one. The list stays the
+    /// complete, scrollable version of the same data.
+    fn treemap_key(
+        &mut self,
+        event: &KeyDownEvent,
+        ids: &[NodeId],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if ids.is_empty() || event.keystroke.modifiers.modified() {
+            return;
+        }
+        let key = event.keystroke.key.as_str();
+        let current = self.selection.selected.last().copied();
+        let index = current.and_then(|id| ids.iter().position(|&row| row == id));
+        if key == "enter" || key == "space" {
+            let id = current.or_else(|| ids.first().copied());
+            if let Some(id) = id {
+                let clicks = if key == "enter" && current.is_some() {
+                    2
+                } else {
+                    1
+                };
+                self.pick(id, clicks, window, cx);
+                cx.stop_propagation();
+            }
+            return;
+        }
+        let at = index.unwrap_or(0);
+        let target = match key {
+            "home" => 0,
+            "end" => ids.len() - 1,
+            "up" | "left" => at.saturating_sub(1),
+            "down" | "right" => (at + 1).min(ids.len() - 1),
+            _ => return,
+        };
+        if let Some(&id) = ids.get(target) {
+            self.pick(id, 1, window, cx);
+            cx.stop_propagation();
+        }
+    }
+
     pub(super) fn hover(&mut self, id: NodeId, hovered: bool, cx: &mut Context<Self>) {
         if hovered {
             self.set_hovered(Some(id), cx);
@@ -621,18 +745,22 @@ impl Workbench {
     fn legend(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let p = *theme::palette(cx);
         let blocks = self.blocks(cx).unwrap_or_default();
-        let mut legend = h_flex().flex_wrap().gap_x(px(14.)).gap_y_1().px_1();
-        for category in Category::ALL {
-            if blocks.iter().any(|block| block.category == category) {
-                legend = legend.child(
+        let present: Vec<Category> = Category::ALL
+            .into_iter()
+            .filter(|category| blocks.iter().any(|block| block.category == *category))
+            .collect();
+        let mut legend = v_flex().gap_y_1().px_1();
+        for row in present.chunks(4) {
+            legend = legend.child(h_flex().flex_wrap().gap_x(px(14.)).gap_y_1().children(
+                row.iter().map(|&category| {
                     h_flex()
                         .gap(px(6.))
                         .text_size(px(11.5))
                         .text_color(p.ink_2)
                         .child(ui::swatch(p.category(category), px(10.)))
-                        .child(category.label()),
-                );
-            }
+                        .child(category.label())
+                }),
+            ));
         }
         legend
     }
@@ -676,6 +804,64 @@ impl Workbench {
         };
         let category = category::classify(tree, subject, &self.suggestions);
         let group = self.suggestions.of(subject);
+        let can_stage = subject != tree.root();
+        let mut actions = h_flex()
+            .gap(px(6.))
+            .flex_shrink_0()
+            .child(
+                Button::new("reveal")
+                    .label("Reveal")
+                    .icon(IconName::Eye)
+                    .outline()
+                    .small()
+                    .tooltip("Reveal in Finder")
+                    .accessibility_label("Reveal in Finder")
+                    .on_click(cx.listener(|this, _, _, cx| this.reveal(cx))),
+            )
+            .child(
+                Button::new("copy-path")
+                    .icon(IconName::Copy)
+                    .outline()
+                    .small()
+                    .tooltip("Copy path")
+                    .accessibility_label("Copy Path")
+                    .on_click(cx.listener(|this, _, _, cx| this.copy_path(cx))),
+            );
+        if can_stage {
+            actions = actions.child(Self::stage_button(self.selection.is_staged(subject), cx));
+        }
+        if selected.is_empty() {
+            return card
+                .child(
+                    h_flex()
+                        .min_w_0()
+                        .items_center()
+                        .gap(px(10.))
+                        .child(ui::swatch(p.category(category), px(12.)))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .max_w(relative(0.45))
+                                .truncate()
+                                .font_family(theme::DISPLAY_FONT)
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_size(px(15.))
+                                .child(name),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .font_family(theme::MONO_FONT)
+                                .text_size(px(11.5))
+                                .text_color(p.ink_3)
+                                .child(format::path(&path)),
+                        )
+                        .child(actions),
+                )
+                .into_any_element();
+        }
         let parent = tree
             .parent(subject)
             .map_or(node.size(), |parent| tree.node(parent).size());
@@ -740,59 +926,24 @@ impl Workbench {
                         .child(text)
                 },
             );
-        let can_stage = subject != tree.root();
-        let mut actions = h_flex()
-            .gap(px(6.))
-            .flex_shrink_0()
-            .child(
-                Button::new("reveal")
-                    .label("Reveal")
-                    .icon(IconName::Eye)
-                    .outline()
-                    .small()
-                    .tooltip("Reveal in Finder")
-                    .accessibility_label("Reveal in Finder")
-                    .on_click(cx.listener(|this, _, _, cx| this.reveal(cx))),
-            )
-            .child(
-                Button::new("copy-path")
-                    .icon(IconName::Copy)
-                    .outline()
-                    .small()
-                    .tooltip("Copy path")
-                    .accessibility_label("Copy Path")
-                    .on_click(cx.listener(|this, _, _, cx| this.copy_path(cx))),
-            );
-        if can_stage {
-            actions = actions.child(Self::stage_button(self.selection.is_staged(subject), cx));
-        }
         card.child(
-            h_flex()
-                .gap(px(16.))
+            v_flex()
+                .min_w_0()
+                .gap(px(4.))
                 .child(
-                    v_flex()
-                        .flex_1()
+                    h_flex()
+                        .gap_2()
                         .min_w_0()
-                        .gap(px(4.))
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .min_w_0()
-                                .child(ui::swatch(p.category(category), px(12.)))
-                                .child(div().min_w_0().truncate().child(ui::display(name, 15.)))
-                                .children(group.map(|group| {
-                                    ui::safety_chip(
-                                        group.safety,
-                                        ui::safety_text(group.safety),
-                                        true,
-                                        cx,
-                                    )
-                                })),
-                        )
-                        .child(facts)
-                        .child(about),
+                        .child(ui::swatch(p.category(category), px(12.)))
+                        .child(div().min_w_0().truncate().child(ui::display(name, 15.)))
+                        .children(group.map(|group| {
+                            ui::safety_chip(group.safety, ui::safety_text(group.safety), true, cx)
+                        }))
+                        .child(div().flex_1())
+                        .child(actions),
                 )
-                .child(actions),
+                .child(facts)
+                .child(about),
         )
         .into_any_element()
     }

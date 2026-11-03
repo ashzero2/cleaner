@@ -51,6 +51,7 @@ pub(crate) struct Settings {
     pub(crate) cache_enabled: bool,
     /// Cross-volume scans are never cached.
     pub(crate) cross_devices: bool,
+    pub(crate) sidebar_visible: bool,
     pub(crate) window: Option<WindowBounds>,
     /// Most recent first. Paths that are not valid UTF-8 are not persisted.
     #[serde(with = "utf8_paths")]
@@ -64,6 +65,7 @@ impl Default for Settings {
             density: Density::default(),
             cache_enabled: true,
             cross_devices: false,
+            sidebar_visible: true,
             window: None,
             recent: Vec::new(),
         }

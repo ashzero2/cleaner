@@ -154,7 +154,7 @@ pub(crate) fn apply(appearance: Appearance, cx: &mut App) {
         theme.muted_foreground = p.ink_2;
         theme.border = p.line;
         theme.input = p.line;
-        theme.ring = p.accent;
+        theme.ring = p.accent_fill;
         theme.caret = p.accent;
         theme.selection = p.accent_soft;
         theme.accent = p.accent_soft;

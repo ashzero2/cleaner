@@ -18,6 +18,7 @@ use crate::{format, panels, theme, ui};
 const CRUMBS: usize = 4;
 
 impl Workbench {
+    #[expect(clippy::too_many_lines, reason = "one declarative toolbar")]
     pub(super) fn toolbar(
         &self,
         _: &mut Window,
@@ -26,10 +27,27 @@ impl Workbench {
         let p = *theme::palette(cx);
         let scanning = self.running.is_some();
         let has_scan = self.table.is_some();
+        let sidebar = Button::new("sidebar-toggle")
+            .icon(if self.settings.sidebar_visible {
+                IconName::PanelLeftClose
+            } else {
+                IconName::PanelLeftOpen
+            })
+            .ghost()
+            .tooltip(if self.settings.sidebar_visible {
+                "Hide sidebar (⌥⌘S)"
+            } else {
+                "Show sidebar (⌥⌘S)"
+            })
+            .accessibility_label(if self.settings.sidebar_visible {
+                "Hide sidebar"
+            } else {
+                "Show sidebar"
+            })
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)));
         let back = Button::new("back")
             .icon(IconName::ChevronLeft)
             .ghost()
-            .small()
             .tooltip("Back")
             .accessibility_label("Back")
             .disabled(self.history_pos == 0 || !has_scan)
@@ -37,7 +55,6 @@ impl Workbench {
         let forward = Button::new("forward")
             .icon(IconName::ChevronRight)
             .ghost()
-            .small()
             .tooltip("Forward")
             .accessibility_label("Forward")
             .disabled(self.history_pos + 1 >= self.history.len() || !has_scan)
@@ -45,9 +62,8 @@ impl Workbench {
         let mut right = h_flex().gap_2().flex_shrink_0();
         if has_scan {
             right = right.child(
-                div().w(px(250.)).child(
+                div().w(px(280.)).child(
                     Input::new(&self.search)
-                        .small()
                         .cleanable(true)
                         .prefix(ui::icon(IconName::Search).small().text_color(p.ink_3)),
                 ),
@@ -62,7 +78,6 @@ impl Workbench {
                 Button::new("locked")
                     .icon(IconName::Lock)
                     .label(format!("{} locked", format::count(count)))
-                    .small()
                     .outline()
                     .rounded(px(999.))
                     .tooltip("Folders macOS didn't let cl-rs read")
@@ -77,7 +92,6 @@ impl Workbench {
             right = right.child(
                 Button::new("stop")
                     .label("Stop")
-                    .small()
                     .outline()
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.jobs.cancel();
@@ -90,7 +104,6 @@ impl Workbench {
                     .icon(IconName::RefreshCw)
                     .when(self.failed, |button| button.label("Retry"))
                     .ghost()
-                    .small()
                     .tooltip("Rescan (⌘R)")
                     .accessibility_label(if self.failed { "Retry" } else { "Rescan" })
                     .on_click(cx.listener(|this, _, _, cx| this.refresh(false, cx))),
@@ -106,7 +119,8 @@ impl Workbench {
                     .h_full()
                     .pl(px(8.))
                     .pr(px(14.))
-                    .gap_1()
+                    .gap_2()
+                    .child(sidebar)
                     .child(back)
                     .child(forward)
                     .child(self.breadcrumb(cx))
@@ -156,7 +170,6 @@ impl Workbench {
                 .label(format::name(&path))
                 .tooltip(format::path(&path))
                 .ghost()
-                .small()
                 .max_w(px(180.))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.navigate(std::sync::Arc::clone(&target), id, true, window, cx);
@@ -173,7 +186,11 @@ impl Workbench {
     }
 
     #[expect(clippy::too_many_lines, reason = "one declarative view tree")]
-    pub(super) fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    pub(super) fn sidebar(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let p = *theme::palette(cx);
         let cached = self.cached(cx);
         let home = std::env::home_dir();
@@ -192,6 +209,7 @@ impl Workbench {
             at_home && self.results.is_none(),
             cx.listener(|this, _, _, cx| this.home(cx)),
             cx,
+            window,
         ));
         if let Some(root) = self.root.as_deref().filter(|_| !at_home) {
             places = places.child(nav(
@@ -207,6 +225,7 @@ impl Workbench {
                     }
                 }),
                 cx,
+                window,
             ));
         }
         places = places.child(nav(
@@ -217,9 +236,12 @@ impl Workbench {
             false,
             cx.listener(|_, _, window, cx| Self::choose(window, cx)),
             cx,
+            window,
         ));
         let mut sidebar = v_flex()
             .id("sidebar")
+            .role(Role::Navigation)
+            .aria_label("Places and recent folders")
             .w(px(theme::SIDEBAR_WIDTH))
             .flex_shrink_0()
             .h_full()
@@ -243,6 +265,7 @@ impl Workbench {
                     kind == Some(super::ResultsKind::Suggestions),
                     cx.listener(|this, _, window, cx| this.show_suggestions(window, cx)),
                     cx,
+                    window,
                 )
                 .when(suggestions > 0, |item| item.child(badge(suggestions, cx))),
             );
@@ -254,6 +277,7 @@ impl Workbench {
                 kind == Some(super::ResultsKind::Largest),
                 cx.listener(|this, _, window, cx| this.largest_files(window, cx)),
                 cx,
+                window,
             ));
             if issues > 0 {
                 find = find.child(nav(
@@ -264,6 +288,7 @@ impl Workbench {
                     false,
                     cx.listener(|this, _, window, cx| this.issues(window, cx)),
                     cx,
+                    window,
                 ));
             }
             sidebar = sidebar.child(find);
@@ -289,6 +314,7 @@ impl Workbench {
                         false,
                         cx.listener(move |this, _, _, cx| this.scan(root.clone(), false, cx)),
                         cx,
+                        window,
                     )
                     .tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx)),
                 );
@@ -317,8 +343,8 @@ impl Workbench {
                 .role(Role::Group)
                 .aria_label(format!("{name}: {summary}"))
                 .gap(px(6.))
-                .p(px(10.))
-                .rounded(px(10.))
+                .p(px(12.))
+                .rounded(px(14.))
                 .bg(p.raised)
                 .border_1()
                 .border_color(p.line)
@@ -412,6 +438,10 @@ fn badge(count: usize, cx: &Context<Workbench>) -> impl IntoElement + use<> {
 }
 
 /// A sidebar row: icon, label, and an optional value on the right.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one declarative row; splitting it would hide the view"
+)]
 fn nav(
     id: impl Into<gpui_kit::ElementId>,
     icon: IconName,
@@ -419,14 +449,28 @@ fn nav(
     meta: Option<String>,
     active: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut gpui_kit::App) + 'static,
-    cx: &Context<Workbench>,
+    cx: &mut Context<Workbench>,
+    window: &mut Window,
 ) -> Stateful<Div> {
     let p = *theme::palette(cx);
     let label: SharedString = label.into();
+    let accessible = meta
+        .as_ref()
+        .map_or_else(|| label.to_string(), |meta| format!("{label}, {meta}"));
+    let id: gpui_kit::ElementId = id.into();
+    let focus = window
+        .use_keyed_state(id.clone(), cx, |_, cx| cx.focus_handle())
+        .read(cx)
+        .clone();
+    let focused = focus.is_focused(window);
     h_flex()
         .id(id)
+        .relative()
         .role(Role::Button)
-        .aria_label(label.clone())
+        .aria_label(accessible)
+        .aria_selected(active)
+        .track_focus(&focus)
+        .tab_index(0)
         .h(px(30.))
         .px(px(10.))
         .gap(px(9.))
@@ -458,4 +502,7 @@ fn nav(
                 .child(meta)
                 .into_any_element()
         }))
+        .when(focused, |row| {
+            row.child(ui::focus_outline(px(9.), p.accent_fill))
+        })
 }

@@ -217,3 +217,28 @@ fn locked_folders_are_listed() {
     app.quit();
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).expect("unlock folder");
 }
+
+#[test]
+#[ignore = "needs a logged-in macOS session and Accessibility permission for the test runner"]
+fn sidebar_can_be_hidden_and_shown() {
+    let fixture = tempfile::tempdir().expect("fixture");
+    let root = fixture.path().join("scan-root");
+    fs::create_dir_all(&root).expect("root folder");
+    fs::write(root.join("file.bin"), b"data").expect("fixture file");
+    let mut app = App::launch(&root, fixture.path());
+    app.drive("wait", "Full scan");
+    app.drive("press", "Hide sidebar");
+    let hidden = app.drive("dump", "");
+    assert!(!hidden.contains("Choose folder"), "{hidden}");
+    app.drive("press", "Show sidebar");
+    let shown = app.drive("dump", "");
+    assert!(shown.contains("Choose folder"), "{shown}");
+    app.drive("press", "Hide sidebar");
+    app.quit();
+    let settings =
+        fs::read_to_string(fixture.path().join("config/settings.json")).expect("saved settings");
+    assert!(
+        settings.contains("\"sidebar_visible\": false"),
+        "{settings}"
+    );
+}
