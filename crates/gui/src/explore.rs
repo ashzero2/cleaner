@@ -27,18 +27,16 @@ const ADD_WIDTH: f32 = 46.;
 /// Most rows whose descendants are searched for a rule match to hint at.
 const HINT_ROWS: usize = 200;
 
-/// Which slice of a folder's children a column lists.
+/// A slice of a folder's children folded into one collapsed row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Lens {
-    /// Every child that isn't folded into a tail row.
-    All,
     /// Only the dot-prefixed children.
     Hidden,
     /// Only the small, non-hidden children.
     Small,
 }
 
-/// A collapsed row at the end of a column: entries too small or too hidden to list.
+/// A collapsed row at the end of the list: entries too small or too hidden to list.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Tail {
     pub(crate) lens: Lens,
@@ -51,7 +49,6 @@ impl Tail {
         match self.lens {
             Lens::Small => "Small items",
             Lens::Hidden => "Hidden items",
-            Lens::All => "",
         }
     }
 }
@@ -64,16 +61,16 @@ const SMALL_ITEM: u64 = 512 * 1024;
 pub(crate) struct Hooks {
     pub(crate) hover: Hover,
     pub(crate) toggle: Toggle,
-    /// A folder row was clicked: open it as the deepest column.
+    /// A folder row was clicked: open it.
     pub(crate) activate: Activate,
-    /// A tail row was clicked: open its slice in the next column.
+    /// A tail row was clicked: list its slice.
     pub(crate) expand: Expand,
 }
 
 type Hover = Rc<dyn Fn(NodeId, bool, &mut App)>;
 type Toggle = Rc<dyn Fn(NodeId, &mut App)>;
 type Activate = Rc<dyn Fn(NodeId, &mut Window, &mut App)>;
-type Expand = Rc<dyn Fn(NodeId, Lens, &mut Window, &mut App)>;
+type Expand = Rc<dyn Fn(Lens, &mut App)>;
 
 /// A rule match to show on a row: on the row itself, or somewhere inside it.
 #[derive(Clone, Debug)]
@@ -86,8 +83,6 @@ pub(crate) struct Hint {
 pub(crate) struct Directory {
     pub(crate) cached: Arc<Cached>,
     pub(crate) id: NodeId,
-    /// Which slice of `id`'s children this column lists.
-    pub(crate) lens: Lens,
     pub(crate) rows: Vec<NodeId>,
     /// Collapsed tail rows after `rows`.
     tails: Vec<Tail>,
@@ -95,8 +90,6 @@ pub(crate) struct Directory {
     results: bool,
     pub(crate) staged: HashSet<NodeId>,
     pub(crate) hovered: Option<NodeId>,
-    /// The folder this column drilled into; highlighted as the active path item.
-    pub(crate) path_child: Option<NodeId>,
     categories: Vec<Category>,
     hints: Vec<Option<Hint>>,
     name_width: Pixels,
@@ -111,18 +104,8 @@ impl Directory {
         suggestions: &Suggestions,
         hooks: Hooks,
     ) -> Self {
-        Self::build(cached, id, Lens::All, suggestions, hooks)
-    }
-
-    /// A column listing one collapsed slice of `id`'s children.
-    pub(crate) fn with_lens(
-        cached: Arc<Cached>,
-        id: NodeId,
-        lens: Lens,
-        suggestions: &Suggestions,
-        hooks: Hooks,
-    ) -> Self {
-        Self::build(cached, id, lens, suggestions, hooks)
+        let (rows, tails) = browse_rows(&cached.tree, id);
+        Self::build(cached, id, rows, tails, false, suggestions, hooks)
     }
 
     /// A table of `rows` from anywhere in the scan, with `id` as the folder to return to.
@@ -133,61 +116,26 @@ impl Directory {
         suggestions: &Suggestions,
         hooks: Hooks,
     ) -> Self {
-        let mut directory = Self {
-            cached,
-            id,
-            lens: Lens::All,
-            rows,
-            tails: Vec::new(),
-            results: true,
-            staged: HashSet::new(),
-            hovered: None,
-            path_child: None,
-            categories: Vec::new(),
-            hints: Vec::new(),
-            name_width: px(260.),
-            bar_width: px(BAR_WIDTH),
-            hooks,
-        };
-        directory.classify(suggestions);
-        directory
+        Self::build(cached, id, rows, Vec::new(), true, suggestions, hooks)
     }
 
     fn build(
         cached: Arc<Cached>,
         id: NodeId,
-        lens: Lens,
+        rows: Vec<NodeId>,
+        tails: Vec<Tail>,
+        results: bool,
         suggestions: &Suggestions,
         hooks: Hooks,
     ) -> Self {
-        let tree = &cached.tree;
-        let (rows, tails) = match lens {
-            Lens::All => browse_rows(tree, id),
-            Lens::Hidden => (
-                tree.children(id)
-                    .filter(|&child| is_hidden(tree, child))
-                    .collect(),
-                Vec::new(),
-            ),
-            Lens::Small => (
-                tree.children(id)
-                    .filter(|&child| {
-                        !is_hidden(tree, child) && tree.node(child).size() < SMALL_ITEM
-                    })
-                    .collect(),
-                Vec::new(),
-            ),
-        };
         let mut directory = Self {
             cached,
             id,
-            lens,
             rows,
             tails,
-            results: false,
+            results,
             staged: HashSet::new(),
             hovered: None,
-            path_child: None,
             categories: Vec::new(),
             hints: Vec::new(),
             name_width: px(260.),
@@ -228,6 +176,34 @@ impl Directory {
                     })
             })
             .collect();
+    }
+
+    /// Lists the entries behind the collapsed `lens` row in place of that row.
+    /// Returns whether there was such a row.
+    pub(crate) fn expand(&mut self, lens: Lens, suggestions: &Suggestions) -> bool {
+        let Some(at) = self.tails.iter().position(|tail| tail.lens == lens) else {
+            return false;
+        };
+        self.tails.remove(at);
+        let hidden_folded = self.tails.iter().any(|tail| tail.lens == Lens::Hidden);
+        let tree = &self.cached.tree;
+        let listed: HashSet<NodeId> = self.rows.iter().copied().collect();
+        let added: Vec<NodeId> = tree
+            .children(self.id)
+            .filter(|child| !listed.contains(child))
+            .filter(|&child| match lens {
+                Lens::Hidden => is_hidden(tree, child),
+                Lens::Small => {
+                    tree.node(child).size() < SMALL_ITEM
+                        && !(hidden_folded && is_hidden(tree, child))
+                }
+            })
+            .collect();
+        self.rows.extend(added);
+        self.rows
+            .sort_by_key(|&id| std::cmp::Reverse(tree.node(id).size()));
+        self.classify(suggestions);
+        true
     }
 
     pub(crate) fn row(&self, index: usize) -> Option<NodeId> {
@@ -426,15 +402,12 @@ impl TableDelegate for Directory {
         let id = self.row(row);
         let hover = Rc::clone(&self.hooks.hover);
         let p = *theme::palette(cx);
-        let active = id.is_some() && id == self.path_child;
         let mut tr = div().id(("row", row)).on_hover(move |hovered, _, cx| {
             if let Some(id) = id {
                 hover(id, *hovered, cx);
             }
         });
-        if active {
-            tr = tr.bg(p.accent_soft);
-        } else if id.is_some() && id == self.hovered {
+        if id.is_some() && id == self.hovered {
             tr = tr.bg(p.panel);
         }
         tr
@@ -453,7 +426,6 @@ impl TableDelegate for Directory {
             return match column {
                 0 => {
                     let expand = Rc::clone(&self.hooks.expand);
-                    let folder = self.id;
                     let lens = tail.lens;
                     let label = tail.label();
                     h_flex()
@@ -479,7 +451,7 @@ impl TableDelegate for Directory {
                                 .font_weight(FontWeight::MEDIUM)
                                 .child(label),
                         )
-                        .on_click(move |_, window, cx| expand(folder, lens, window, cx))
+                        .on_click(move |_, _, cx| expand(lens, cx))
                         .into_any_element()
                 }
                 2 => v_flex()

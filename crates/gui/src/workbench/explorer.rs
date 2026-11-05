@@ -1,42 +1,39 @@
-use std::fmt::Write as _;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use clrs_core::{EntryKind, NodeId, Safety};
+use clrs_core::{EntryKind, NodeId};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::table::DataTable;
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{Selectable as _, Sizable as _, Size, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Selectable as _, Sizable as _, Size, h_flex, v_flex};
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, Div, FontWeight, InteractiveElement as _, IntoElement,
-    KeyDownEvent, ParentElement as _, Pixels, Role, StatefulInteractiveElement as _, Styled as _,
-    Window, canvas, div, prelude::FluentBuilder as _, px, relative, white,
+    App, ClickEvent, Context, Div, FontWeight, Hsla, InteractiveElement as _, IntoElement,
+    KeyDownEvent, MouseMoveEvent, ParentElement as _, Role, StatefulInteractiveElement as _,
+    Styled as _, Window, canvas, div, prelude::FluentBuilder as _, px, relative, white,
 };
 
 use super::{ResultsKind, SearchScope, Workbench};
 use crate::category::{self, Category};
 use crate::settings::Density;
-use crate::treemap::{self, Block};
+use crate::sunburst::{self, Geometry, Hit, Segment};
 use crate::{format, theme, ui};
 
-/// Laid-out tiles for one folder at one size, reused until either changes.
-pub(super) struct TreemapCache {
+/// Laid-out rings for one folder of one scan, reused until either or the suggestions
+/// change.
+pub(super) struct MapCache {
+    tree: usize,
     folder: NodeId,
-    width: i32,
-    height: i32,
     suggestions: usize,
-    blocks: Rc<Vec<Block>>,
+    segments: Rc<Vec<Segment>>,
 }
 
-/// Width bounds for one browse column.
-pub(super) const COLUMN_MIN_WIDTH: f32 = 300.;
-pub(super) const COLUMN_MAX_WIDTH: f32 = 480.;
-
-#[expect(clippy::cast_possible_truncation, reason = "pixel sizes")]
-fn key(value: f32) -> i32 {
-    value.round() as i32
+/// What the centre of the disk map describes.
+struct Readout {
+    name: String,
+    size: u64,
+    detail: String,
 }
 
 impl Workbench {
@@ -59,7 +56,7 @@ impl Workbench {
         if let Some(warning) = &self.warning {
             main = main.child(Self::callout(warning.clone(), cx));
         }
-        if self.columns.is_empty() && self.table.is_none() {
+        if self.table.is_none() {
             return main.child(if self.running.is_some() {
                 self.scanning(cx).into_any_element()
             } else {
@@ -81,11 +78,11 @@ impl Workbench {
             .when(self.settings.map_visible, |body| {
                 body.child(
                     v_flex()
-                        .w(relative(0.40))
+                        .w(relative(0.46))
                         .flex_shrink_0()
                         .min_h_0()
                         .gap(px(12.))
-                        .child(self.treemap(window, cx))
+                        .child(self.disk_map(window, cx))
                         .child(self.legend(cx)),
                 )
             });
@@ -440,90 +437,189 @@ impl Workbench {
             .into_any_element()
     }
 
-    fn blocks(&self, cx: &Context<Self>) -> Option<Rc<Vec<Block>>> {
+    fn segments(&self, cx: &Context<Self>) -> Option<Rc<Vec<Segment>>> {
         let cached = self.cached(cx)?;
         let folder = self.folder(cx)?;
-        let measured = self.treemap_size.get();
-        let (width, height) = (f32::from(measured.width), f32::from(measured.height));
+        let tree = Arc::as_ptr(&cached) as usize;
         let suggestions = Arc::as_ptr(&self.suggestions) as usize;
-        let mut cache = self.treemap_cache.borrow_mut();
+        let mut cache = self.map_cache.borrow_mut();
         if let Some(hit) = cache.as_ref().filter(|hit| {
-            hit.folder == folder
-                && hit.width == key(width)
-                && hit.height == key(height)
-                && hit.suggestions == suggestions
+            hit.tree == tree && hit.folder == folder && hit.suggestions == suggestions
         }) {
-            return Some(Rc::clone(&hit.blocks));
+            return Some(Rc::clone(&hit.segments));
         }
-        let blocks = Rc::new(treemap::blocks(
-            &cached.tree,
+        let segments = Rc::new(sunburst::segments(&cached.tree, folder, &self.suggestions));
+        *cache = Some(MapCache {
+            tree,
             folder,
-            &self.suggestions,
-            width,
-            height,
-        ));
-        *cache = Some(TreemapCache {
-            folder,
-            width: key(width),
-            height: key(height),
             suggestions,
-            blocks: Rc::clone(&blocks),
+            segments: Rc::clone(&segments),
         });
-        Some(blocks)
+        Some(segments)
     }
 
-    fn treemap(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    /// The segment the pointer is over, or else the one for the hovered list row.
+    fn highlighted(&self, segments: &[Segment]) -> Option<usize> {
+        match self.map_hover {
+            Some(Hit::Segment(index)) => Some(index),
+            Some(Hit::Center) => None,
+            None => self
+                .hovered
+                .and_then(|id| segments.iter().position(|segment| segment.id == Some(id))),
+        }
+    }
+
+    #[expect(clippy::too_many_lines, reason = "one declarative view tree")]
+    fn disk_map(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let p = *theme::palette(cx);
         let focus = window
-            .use_keyed_state("treemap", cx, |_, cx| cx.focus_handle())
+            .use_keyed_state("disk-map", cx, |_, cx| cx.focus_handle())
             .read(cx)
             .clone();
         let focused = focus.is_focused(window);
-        let measure = Rc::clone(&self.treemap_size);
+        let segments = self.segments(cx).unwrap_or_default();
+        let highlighted = self.highlighted(&segments);
+        let lift = white().opacity(if cx.theme().is_dark() { 0.22 } else { 0.32 });
+        let fills: Vec<Hsla> = segments
+            .iter()
+            .enumerate()
+            .map(|(index, segment)| {
+                let base = if segment.id.is_none() {
+                    p.ink_3.opacity(0.45)
+                } else {
+                    p.category(segment.category)
+                };
+                let fill = base.blend(p.panel.opacity(0.14 * f32::from(segment.depth - 1)));
+                if highlighted.is_some_and(|at| sunburst::within(&segments, index, at)) {
+                    fill.blend(lift)
+                } else {
+                    fill
+                }
+            })
+            .collect();
+        let selected: Vec<usize> = segments
+            .iter()
+            .enumerate()
+            .filter(|(_, segment)| segment.id.is_some_and(|id| self.selection.is_selected(id)))
+            .map(|(index, _)| index)
+            .collect();
+        let center_fill = if self.map_hover == Some(Hit::Center) {
+            p.accent_soft
+        } else {
+            p.raised
+        };
+        let cell = Rc::clone(&self.map_geometry);
         let view = cx.weak_entity();
-        let mut area = div().relative().size_full().child(
-            canvas(
-                move |bounds, _, cx| {
-                    if measure.get() != bounds.size {
-                        measure.set(bounds.size);
-                        let view = view.clone();
-                        cx.defer(move |cx| {
-                            let _ = view.update(cx, |_, cx| cx.notify());
-                        });
+        let painted = Rc::clone(&segments);
+        let chart = canvas(
+            move |bounds, _, cx| {
+                let geometry = Geometry::new(
+                    bounds.center(),
+                    f32::from(bounds.size.width),
+                    f32::from(bounds.size.height),
+                );
+                if cell.get() != Some(geometry) {
+                    cell.set(Some(geometry));
+                    let view = view.clone();
+                    cx.defer(move |cx| {
+                        let _ = view.update(cx, |_, cx| cx.notify());
+                    });
+                }
+                geometry
+            },
+            move |_, geometry, window, _| {
+                for (segment, fill) in painted.iter().zip(&fills) {
+                    if let Some(path) = geometry.wedge(segment, None) {
+                        window.paint_path(path, *fill);
                     }
-                },
-                |_, (), _, _| {},
+                }
+                for &index in &selected {
+                    if let Some(path) = geometry.wedge(&painted[index], Some(px(2.))) {
+                        window.paint_path(path, p.ink);
+                    }
+                }
+                if let Some(path) = geometry.disc() {
+                    window.paint_path(path, center_fill);
+                }
+            },
+        )
+        .absolute()
+        .size_full();
+        let readout = self.readout(&segments, cx);
+        let hole = self
+            .map_geometry
+            .get()
+            .map_or(70., |geometry| geometry.hole);
+        let label = readout.as_ref().map_or_else(String::new, |readout| {
+            format!(
+                ", {}, {}, {}",
+                readout.name,
+                format::allocated(readout.size),
+                readout.detail
             )
-            .absolute()
-            .size_full(),
-        );
-        let blocks = self.blocks(cx).unwrap_or_default();
+        });
+        let center = readout.map(|readout| {
+            v_flex()
+                .w(px((hole * 1.6).max(60.)))
+                .items_center()
+                .gap(px(2.))
+                .child(
+                    div()
+                        .w_full()
+                        .truncate()
+                        .text_center()
+                        .text_size(px(12.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(p.ink)
+                        .child(readout.name),
+                )
+                .child(ui::display(
+                    format::allocated(readout.size),
+                    (hole / 4.).clamp(13., 22.),
+                ))
+                .child(
+                    div()
+                        .w_full()
+                        .truncate()
+                        .text_center()
+                        .text_size(px(11.))
+                        .text_color(p.ink_2)
+                        .font_features(theme::tabular())
+                        .child(readout.detail),
+                )
+        });
         let ids = Rc::new(
-            blocks
+            segments
                 .iter()
-                .filter_map(|block| block.id)
+                .filter(|segment| segment.depth == 1)
+                .filter_map(|segment| segment.id)
                 .collect::<Vec<_>>(),
         );
-        let parent = self
-            .cached(cx)
-            .zip(self.folder(cx))
-            .map_or(1, |(cached, folder)| cached.tree.node(folder).size());
-        for (index, block) in blocks.iter().enumerate() {
-            area = area.child(self.tile(index, block, parent, cx));
-        }
-        if blocks.is_empty() && self.treemap_size.get().width > px(0.) {
+        let mut area = div().relative().size_full().child(chart).child(
+            v_flex()
+                .absolute()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .children(center),
+        );
+        if segments.is_empty() && self.map_geometry.get().is_some() {
             area = area.child(
                 div()
+                    .absolute()
+                    .bottom_0()
+                    .w_full()
                     .p_4()
+                    .text_center()
                     .text_color(p.ink_2)
                     .child("Nothing in this folder takes up space."),
             );
         }
         div()
-            .id("treemap")
-            .role(Role::List)
+            .id("disk-map")
+            .role(Role::Group)
             .aria_label(format!(
-                "Treemap of the open folder, {}",
+                "Disk map of the open folder, {}{label}",
                 format::plural(ids.len(), "item")
             ))
             .track_focus(&focus)
@@ -531,11 +627,28 @@ impl Workbench {
             .on_key_down(cx.listener({
                 let ids = Rc::clone(&ids);
                 move |this, event: &KeyDownEvent, window, cx| {
-                    this.treemap_key(event, &ids, window, cx);
+                    this.map_key(event, &ids, window, cx);
                 }
             }))
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                let hit = this
+                    .map_geometry
+                    .get()
+                    .zip(this.segments(cx))
+                    .and_then(|(geometry, segments)| geometry.hit(event.position, &segments));
+                this.set_map_hover(hit, cx);
+            }))
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !*hovered {
+                    this.set_map_hover(None, cx);
+                }
+            }))
+            .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                this.map_click(event, window, cx);
+            }))
+            .when(self.map_hover.is_some(), gpui_kit::Styled::cursor_pointer)
             .flex_1()
-            .min_h(px(160.))
+            .min_h(px(220.))
             .rounded(px(14.))
             .bg(p.panel)
             .border_1()
@@ -543,124 +656,130 @@ impl Workbench {
             .p(px(8.))
             .overflow_hidden()
             .child(area)
-            .when(focused, |area| {
-                area.child(ui::focus_inside(px(14.), p.accent_fill))
+            .when(focused, |map| {
+                map.child(ui::focus_inside(px(14.), p.accent_fill))
             })
     }
 
-    fn tile(&self, index: usize, block: &Block, parent: u64, cx: &mut Context<Self>) -> AnyElement {
-        const GAP: f32 = treemap::TILE_GAP;
-        let p = *theme::palette(cx);
-        let color = p.category(block.category);
-        let (width, height) = (block.width - GAP, block.height - GAP);
-        let size = format::allocated(block.size);
-        let share = format::percent(ui::share(block.size, parent));
-        let mut label = format!(
-            "{}, {size}, {share}, {}",
-            block.name,
-            block.category.label()
-        );
-        if let Some(safety) = block.safety {
-            let _ = write!(label, ", {}", ui::safety_text(safety).to_lowercase());
-        }
-        let selected = block.id.is_some_and(|id| self.selection.is_selected(id));
-        let hovered = block.id.is_some() && block.id == self.hovered;
-        let fill = if hovered {
-            color.blend(white().opacity(0.14))
-        } else {
-            color
+    /// What the centre of the map names: the hovered wedge, the hovered list row, or the
+    /// open folder.
+    fn readout(&self, segments: &[Segment], cx: &App) -> Option<Readout> {
+        let cached = self.cached(cx)?;
+        let folder = self.folder(cx)?;
+        let tree = &cached.tree;
+        let total = tree.node(folder).size();
+        let name = |id: NodeId| {
+            if id == tree.root() {
+                format::name(tree.root_path())
+            } else {
+                tree.name(id).to_string_lossy().into_owned()
+            }
         };
-        let tooltip = format!("{}\n{size} · {share}", block.name);
-        let mut tile = div()
-            .id(("tile", index))
-            .role(Role::ListItem)
-            .aria_label(label)
-            .aria_selected(selected)
-            .absolute()
-            .left(px(block.x))
-            .top(px(block.y))
-            .w(px(width.max(1.)))
-            .h(px(height.max(1.)))
-            .px(px(6.))
-            .py(px(7.))
-            .overflow_hidden()
-            .rounded(px(8.))
-            .bg(fill)
-            .text_color(p.tile_ink)
-            .when(selected, |tile| tile.border_1().border_color(p.ink))
-            .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx));
-        if let Some(id) = block.id {
-            tile = tile
-                .cursor_pointer()
-                .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                    this.hover(id, *hovered, cx);
-                }))
-                .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                    this.pick(id, event.click_count(), window, cx);
-                }));
-        }
-        if width >= treemap::LABEL_WIDTH && height >= treemap::LABEL_HEIGHT {
-            tile = tile
-                .child(
-                    div()
-                        .relative()
-                        .truncate()
-                        .pr(px(if block.safety.is_some() { 20. } else { 0. }))
-                        .text_size(px(12.5))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(block.name.clone()),
-                )
-                .child(
-                    div()
-                        .relative()
-                        .truncate()
-                        .text_size(px(11.5))
-                        .opacity(0.75)
-                        .font_features(theme::tabular())
-                        .child(size),
-                );
-        }
-        if let Some(safety) = block.safety.filter(|_| width > 60. && height > 40.) {
-            tile = tile.child(
-                div()
-                    .absolute()
-                    .top(px(6.))
-                    .right(px(6.))
-                    .size(px(18.))
-                    .rounded_full()
-                    .bg(p.raised)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        ui::icon(match safety {
-                            Safety::Safe => IconName::ShieldCheck,
-                            Safety::Review => IconName::Eye,
-                        })
-                        .size(px(11.))
-                        .text_color(match safety {
-                            Safety::Safe => p.safe,
-                            Safety::Review => p.review,
-                        }),
-                    ),
-            );
-        }
-        tile.into_any_element()
+        let item = |id: NodeId| {
+            let size = tree.node(id).size();
+            Readout {
+                name: name(id),
+                size,
+                detail: format!(
+                    "{} · {}",
+                    format::percent(ui::share(size, total)),
+                    category::classify(tree, id, &self.suggestions).label()
+                ),
+            }
+        };
+        let open = || Readout {
+            name: name(folder),
+            size: total,
+            detail: format!("{} files", format::count(tree.node(folder).files())),
+        };
+        Some(match self.map_hover {
+            Some(Hit::Segment(index)) => {
+                let segment = segments.get(index)?;
+                match segment.id {
+                    Some(id) => item(id),
+                    None => Readout {
+                        name: format!("{} smaller items", format::count(segment.folded as u64)),
+                        size: segment.size,
+                        detail: format::percent(ui::share(segment.size, total)),
+                    },
+                }
+            }
+            Some(Hit::Center) => tree.parent(folder).map_or_else(open, |parent| Readout {
+                name: format!("Back to {}", name(parent)),
+                size: tree.node(parent).size(),
+                detail: "Click to go up".to_owned(),
+            }),
+            None => self.hovered.map_or_else(open, item),
+        })
     }
 
-    /// Arrow keys move through the drawn tiles and Enter opens one. The list stays the
-    /// complete, scrollable version of the same data.
-    fn treemap_key(
+    fn set_map_hover(&mut self, hit: Option<Hit>, cx: &mut Context<Self>) {
+        if self.map_hover == hit {
+            return;
+        }
+        self.map_hover = hit;
+        let id = match hit {
+            Some(Hit::Segment(index)) => self
+                .segments(cx)
+                .and_then(|segments| segments.get(index).and_then(|segment| segment.id)),
+            _ => None,
+        };
+        self.set_hovered(id, cx);
+        cx.notify();
+    }
+
+    /// Clicking a folder's wedge opens it, a file's wedge selects it, and the centre goes
+    /// up a level.
+    fn map_click(&mut self, event: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if event.click_count() > 1 {
+            return;
+        }
+        let (Some(cached), Some(segments), Some(geometry)) =
+            (self.cached(cx), self.segments(cx), self.map_geometry.get())
+        else {
+            return;
+        };
+        match geometry.hit(event.position(), &segments) {
+            Some(Hit::Center) => {
+                self.map_hover = None;
+                self.parent(window, cx);
+            }
+            Some(Hit::Segment(index)) => {
+                let Some(id) = segments.get(index).and_then(|segment| segment.id) else {
+                    return;
+                };
+                if cached.tree.node(id).kind() == EntryKind::Dir {
+                    self.map_hover = None;
+                    self.navigate(&cached, id, false, window, cx);
+                } else {
+                    self.pick(id, 1, window, cx);
+                }
+            }
+            None => {}
+        }
+    }
+
+    /// Arrow keys move through the inner ring, Return opens the selection and Delete goes
+    /// up. The list stays the complete, scrollable version of the same data.
+    fn map_key(
         &mut self,
         event: &KeyDownEvent,
         ids: &[NodeId],
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if ids.is_empty() || event.keystroke.modifiers.modified() {
+        if event.keystroke.modifiers.modified() {
             return;
         }
         let key = event.keystroke.key.as_str();
+        if key == "backspace" {
+            self.parent(window, cx);
+            cx.stop_propagation();
+            return;
+        }
+        if ids.is_empty() {
+            return;
+        }
         let current = self.selection.selected.last().copied();
         let index = current.and_then(|id| ids.iter().position(|&row| row == id));
         if key == "enter" || key == "space" {
@@ -700,10 +819,14 @@ impl Workbench {
 
     fn legend(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let p = *theme::palette(cx);
-        let blocks = self.blocks(cx).unwrap_or_default();
+        let segments = self.segments(cx).unwrap_or_default();
         let present: Vec<Category> = Category::ALL
             .into_iter()
-            .filter(|category| blocks.iter().any(|block| block.category == *category))
+            .filter(|category| {
+                segments
+                    .iter()
+                    .any(|segment| segment.depth == 1 && segment.category == *category)
+            })
             .collect();
         let mut legend = v_flex().gap_y_1().px_1();
         for row in present.chunks(4) {
@@ -992,63 +1115,7 @@ impl Workbench {
                 .text_color(p.ink)
                 .into_any_element();
         }
-        let width = self.column_width();
-        let density = match self.settings.density {
-            Density::Comfortable => px(42.),
-            Density::Compact => px(38.),
-        };
-        let count = self.columns.len();
-        let mut columns = h_flex()
-            .id("columns")
-            .h_full()
-            .flex_1()
-            .min_h_0()
-            .overflow_x_scroll()
-            .track_scroll(&self.columns_scroll)
-            .items_stretch();
-        for (index, table) in self.columns.iter().enumerate() {
-            columns = columns.child(
-                div()
-                    .w(width)
-                    .min_h_0()
-                    .flex_shrink_0()
-                    .when(index + 1 < count, |column| {
-                        column.border_r_1().border_color(p.line)
-                    })
-                    .child(
-                        DataTable::new(table)
-                            .bordered(false)
-                            .stripe(false)
-                            .header_row_height(px(34.))
-                            .with_size(Size::Size(density)),
-                    ),
-            );
-        }
-        ui::card(cx)
-            .flex_1()
-            .min_w_0()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .child(
-                div()
-                    .relative()
-                    .flex_1()
-                    .min_h_0()
-                    .child(measurer)
-                    .child(columns),
-            )
-            .text_color(p.ink)
-            .into_any_element()
-    }
-
-    /// Equal share of the list area for each open column, clamped to a readable range.
-    /// Past the minimum the card scrolls horizontally.
-    #[expect(clippy::cast_precision_loss, reason = "column count is small")]
-    pub(super) fn column_width(&self) -> Pixels {
-        let count = self.columns.len().max(1);
-        (self.list_width.get() / count as f32).clamp(px(COLUMN_MIN_WIDTH), px(COLUMN_MAX_WIDTH))
+        ui::card(cx).into_any_element()
     }
 
     #[expect(clippy::too_many_lines, reason = "one declarative header")]

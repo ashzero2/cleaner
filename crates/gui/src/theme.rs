@@ -40,7 +40,6 @@ pub(crate) struct Palette {
     pub(crate) review: Hsla,
     pub(crate) review_soft: Hsla,
     pub(crate) danger: Hsla,
-    pub(crate) tile_ink: Hsla,
     pub(crate) shadow: Hsla,
     categories: [Hsla; Category::ALL.len()],
 }
@@ -74,7 +73,6 @@ impl Palette {
             review: c(0x0087_570c, 0x00e8_b65c),
             review_soft: c(0x00fb_efd6, 0x003d_2e12),
             danger: c(0x00b2_2d3b, 0x00ff_99a5),
-            tile_ink: c(0x002e_2522, 0x001e_1817),
             shadow: if dark {
                 gpui_kit::hsla(0., 0., 0., 0.3)
             } else {

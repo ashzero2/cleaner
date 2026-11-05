@@ -11,7 +11,7 @@ cl-rs is a friendly, warm Mac utility that answers one question fast: **what is 
 
 - **Personality:** friendly and warm, not goofy. Soft surfaces, rounded shapes, an apricot accent and kind, plain copy. It must still feel trustworthy enough to delete things. A mascot may come later and must fit this style. No characters or jokes for now.
 - **Structure:** one explorer window. The treemap sits beside the list with its legend underneath, a detail card sits under the list, and a collector tray runs along the bottom. There is no right-hand inspector column.
-- **Hero visual:** a one-level squarified treemap coloured by **category**; double-click drills into a folder for detail, and entries too small to label fold into one "smaller items" tile. There is no sunburst.
+- **Hero visual:** a DaisyDisk-style disk map: concentric rings coloured by **category**, the open folder in the centre and each ring one level deeper. Clicking a folder wedge opens it, clicking the centre goes up, and siblings too narrow to draw fold into one grey "smaller items" wedge.
 - **Themes:** light and dark are both first-class. The app follows the system appearance, with an override in Settings.
 - **Native first:** use macOS conventions (sheet from the title bar, ⌘ shortcuts, Reveal in Finder, Trash semantics) and the system font for body text.
 
@@ -148,14 +148,14 @@ Sections have uppercase labels: **Places**, **Find**, **Recent**.
 - Right: the **Reclaimable** card (`panel`, radius 14, width 380): "47.5 GB is safe to clear" (`safe`, title size) and "+ 53 GB worth a look" in `ink_2`, over an 8 pt stacked meter (safe then review, as a share of the folder). Clicking it opens the Suggestions list.
 - When a folder has no suggestions, the card reads "Nothing to clear here" in `ink_2` with an empty meter.
 
-### Treemap
-- It sits in a `panel` well (radius 14, 8 pt inset) that fills the column height left over after the legend. It is always visible. The toggle is removed.
-- **Tiles:** a 3 pt gutter between tiles, radius 8, category fill, and a label (name 12.5/semibold plus size 11.5 at 75% opacity) when the rendered tile is at least 48×28. Tiles too small to label fold into the `+N` tail.
-- **Nesting:** tiles at least 110×110 draw up to 8 sub-tiles of their own children underneath the label, offset 44 pt from the top. Children below 4% of the parent fold into one `+N` sub-tile. Sub-tiles are 5 pt-radius blocks in white at 28% (light) or black at 16% (dark), labelled when at least 56×22. Clicking a sub-tile selects that child. Double-clicking enters it.
-- **Suggestion marker:** an 18 pt circle in the tile corner, with a shield-check (`safe`) or an eye (`review`).
-- **States:** hover brightens the tile by 7% and highlights the matching list row. Selection draws a 3 pt `ink` inner outline. The list and the treemap share selection and hover.
-- **Tail:** everything beyond 80 tiles, or below 0.5% of the area, becomes one `+N` tile in `other`. Tiles that cannot fit a label fold into it too, so every named tile is readable.
-- **Legend:** one row under the well, showing only categories present in the current folder: a 10 pt swatch (radius 3) plus the label in caption `ink_2`.
+### Disk map
+- It sits in a `panel` well (radius 14, 8 pt inset) that fills the column height left over after the legend. The toolbar toggle can hide it.
+- **Rings:** the open folder is a `raised` centre disc (30% of the radius); five rings around it show children, grandchildren and so on. Wedge angles are proportional to size, with a 1.5 pt gap between rings and wedges. Each ring is tinted 14% further towards `panel` so depth reads at a glance.
+- **Centre readout:** the hovered wedge (or hovered list row) shows its name, size and share of the open folder; otherwise the open folder with its file count. Hovering the centre reads "Back to …".
+- **Fold:** siblings narrower than 0.012 rad fold into one grey wedge ("N smaller items").
+- **States:** hover lightens the wedge and everything inside it and highlights the list row; selection draws a 2 pt `ink` outline. The list and the map share selection and hover.
+- **Keyboard:** arrows walk the inner ring, Return opens, Delete goes up.
+- **Legend:** one row under the well, showing only categories present in the inner ring.
 
 ### List
 - A card (`raised`, radius 14, 1 pt `line`) with a sticky header: NAME · (bar) · SIZE · (action).
@@ -280,4 +280,4 @@ Unchanged: `~/Library/Application Support/cl-rs/settings.json` (appearance, dens
 - No raw error strings or byte counts in the main UI.
 - No centred sidebar items, zebra rows, or empty table columns.
 - No emoji icons, gradients, glassmorphism, or a shadow on every card.
-- No sunburst or second chart type.
+- No second chart type beside the disk map.

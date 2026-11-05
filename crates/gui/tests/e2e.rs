@@ -121,7 +121,7 @@ fn scan_navigate_settings_and_refresh() {
     app.drive("wait", "so you can still put them back");
     app.drive("wait", "Move to Trash");
     app.drive("press", "Cancel");
-    app.drive("wait", "Treemap of the open folder");
+    app.drive("wait", "Disk map of the open folder");
     app.drive("wait", "readme.txt, ");
     app.drive("key", "find");
     app.drive("type", "unique");
@@ -255,13 +255,13 @@ fn map_can_be_hidden_and_shown() {
     fs::write(root.join("file.bin"), b"data").expect("fixture file");
     let mut app = App::launch(&root, fixture.path());
     app.drive("wait", "Full scan");
-    app.drive("wait", "Treemap of the open folder");
+    app.drive("wait", "Disk map of the open folder");
     app.drive("press", "Hide map");
     let hidden = app.drive("dump", "");
-    assert!(!hidden.contains("Treemap of the open folder"), "{hidden}");
+    assert!(!hidden.contains("Disk map of the open folder"), "{hidden}");
     app.drive("press", "Show map");
     let shown = app.drive("dump", "");
-    assert!(shown.contains("Treemap of the open folder"), "{shown}");
+    assert!(shown.contains("Disk map of the open folder"), "{shown}");
     app.drive("press", "Hide map");
     app.quit();
     let settings =

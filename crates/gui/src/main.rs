@@ -13,8 +13,8 @@ mod recommendations;
 mod search;
 mod selection;
 mod settings;
+mod sunburst;
 mod theme;
-mod treemap;
 mod ui;
 mod workbench;
 
