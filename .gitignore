@@ -26,3 +26,7 @@ perf.data*
 .env
 .env.*
 docs/
+build.log
+
+# Agent workspace state
+.commandcode/
